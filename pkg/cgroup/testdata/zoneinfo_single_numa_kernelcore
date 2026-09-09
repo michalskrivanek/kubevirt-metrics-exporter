@@ -1,0 +1,24 @@
+Node 0, zone      DMA
+  pages free     2200
+        min      1
+        low      1
+       high      1
+     present   4000
+Node 0, zone    DMA32
+  pages free    38000
+        min      0
+        low      0
+       high      0
+     present 390000
+Node 0, zone   Normal
+  pages free     7500
+        min      0
+        low      0
+       high      0
+     present 131072
+Node 0, zone  Movable
+  pages free  9400000
+        min      0
+        low      0
+       high      0
+     present 24000000

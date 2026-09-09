@@ -8,7 +8,7 @@ metadata:
 spec:
   config:
     display:
-      name: KubeVirt VM Memory
+      name: Kubevirt VM Memory (Dev Preview)
       description: THP and resident memory ratios per VM, plus node khugepaged, ksmd, and THP activity
     duration: 24h
 
@@ -114,6 +114,24 @@ spec:
                 - "5m"
                 - "10m"
 
+      - kind: ListVariable
+        spec:
+          name: kernelcore_zoneinfo_gate
+          display:
+            hidden: true
+          allowAllValue: false
+          allowMultiple: false
+          defaultValue:
+            - movable_present
+          plugin:
+            kind: StaticListVariable
+            spec:
+              values:
+                - label: movable_present
+                  value: '* on(node, numa) group_left() (sum by (node, numa) (kme_node_zone_present_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone="Movable"}) > bool 0)'
+                - label: always
+                  value: '* 1'
+
     panels:
       thp_resident_ratio:
         kind: Panel
@@ -173,11 +191,18 @@ spec:
                     minStep: "30s"
                     seriesNameFormat: "{{name}}"
 
-      node_thp_readiness:
+      node_thp_readiness_movable:
         kind: Panel
         spec:
           display:
-            name: THP readiness (Normal zone, per NUMA)
+            name: THP readiness (Movable zone)
+            description: >-
+              Per-NUMA buddy stock in the Movable zone (Normal if no Movable).
+              ≥2 MiB Movable = buddy − unmovable − isolate at orders ≥9.
+              Movable total = same formula, all orders.
+              Buddy free total = buddyinfo block sum.
+              Non-THP-movable freelist = buddy − movable (Unmovable + Isolate in Movable zone).
+              Dashed: Movable zone present (structural pool size) and MemAvailable (node-wide reclaim).
           links:
             - name: Node memory pressure (detail)
               url: '/monitoring/v2/dashboards/view?dashboard=perses-dashboard-node-memory-overview&project=openshift-cnv&node=$node'
@@ -187,6 +212,7 @@ spec:
             spec:
               yAxis:
                 show: true
+                label: Buddy stock (bytes)
                 format:
                   shortValues: true
                   unit: bytes
@@ -195,6 +221,8 @@ spec:
                 mode: table
               querySettings:
                 - queryIndex: 4
+                  lineStyle: dashed
+                - queryIndex: 5
                   lineStyle: dashed
           queries:
             - kind: TimeSeriesQuery
@@ -207,7 +235,7 @@ spec:
                       name: thanos-querier
                     query: 'kme_node_movable_bytes_order_ge_9{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}'
                     minStep: "30s"
-                    seriesNameFormat: "≥2 MiB movable-capable NUMA {{numa}} ({{node}})"
+                    seriesNameFormat: "≥2 MiB Movable - {{node}} · NUMA {{numa}}"
             - kind: TimeSeriesQuery
               spec:
                 plugin:
@@ -218,7 +246,7 @@ spec:
                       name: thanos-querier
                     query: 'kme_node_movable_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}'
                     minStep: "30s"
-                    seriesNameFormat: "movable-capable total NUMA {{numa}} ({{node}})"
+                    seriesNameFormat: "Movable total - {{node}} · NUMA {{numa}}"
             - kind: TimeSeriesQuery
               spec:
                 plugin:
@@ -229,7 +257,7 @@ spec:
                       name: thanos-querier
                     query: 'kme_node_buddy_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}'
                     minStep: "30s"
-                    seriesNameFormat: "buddy free total NUMA {{numa}} ({{node}})"
+                    seriesNameFormat: "Buddy free total - {{node}} · NUMA {{numa}}"
             - kind: TimeSeriesQuery
               spec:
                 plugin:
@@ -238,9 +266,9 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'kme_node_unmovable_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}'
+                    query: 'kme_node_buddy_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"} - kme_node_movable_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}'
                     minStep: "30s"
-                    seriesNameFormat: "unmovable total NUMA {{numa}} ({{node}})"
+                    seriesNameFormat: "Non-THP-movable freelist (buddy − movable) - {{node}} · NUMA {{numa}}"
             - kind: TimeSeriesQuery
               spec:
                 plugin:
@@ -251,7 +279,90 @@ spec:
                       name: thanos-querier
                     query: 'node_memory_MemAvailable_bytes{instance=~"$node"}'
                     minStep: "30s"
-                    seriesNameFormat: "MemAvailable ({{instance}})"
+                    seriesNameFormat: "MemAvailable - node-wide reclaim estimate · {{instance}}"
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+                    query: 'sum by (node, numa) (kme_node_zone_present_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone="Movable"})'
+                    minStep: "30s"
+                    seriesNameFormat: "Movable zone present - {{node}} · NUMA {{numa}}"
+
+      node_thp_readiness_unmovable:
+        kind: Panel
+        spec:
+          display:
+            name: THP readiness (Kernelcore pool)
+            description: >-
+              Structural kernelcore budget from zoneinfo: DMA + DMA32 + Normal present,
+              free, and used (≈ kernelcore= without parsing cmdline). THP-ineligible;
+              mostly kernel/slab/page-table allocations. Kernelcore total/free/used lines
+              appear only when the Movable zone is present (split memory layout); on
+              hosts without Movable those zones hold essentially all node RAM and used
+              would misrepresent guest and cache as kernel stock. Unmovable freelist is
+              the small dynamic pinned stock (pagetypeinfo Unmovable migrate type, Normal
+              + Movable).
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              yAxis:
+                show: true
+                label: Kernelcore zone memory (bytes)
+                format:
+                  shortValues: true
+                  unit: bytes
+              legend:
+                position: bottom
+                mode: table
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+                    query: 'sum by (node, numa) (kme_node_zone_present_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"}) $kernelcore_zoneinfo_gate'
+                    minStep: "30s"
+                    seriesNameFormat: "Kernelcore total - {{node}} · NUMA {{numa}}"
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+                    query: 'sum by (node, numa) (kme_node_zone_free_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"}) $kernelcore_zoneinfo_gate'
+                    minStep: "30s"
+                    seriesNameFormat: "Kernelcore free - {{node}} · NUMA {{numa}}"
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+                    query: 'sum by (node, numa) (kme_node_zone_present_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"}) - sum by (node, numa) (kme_node_zone_free_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"}) $kernelcore_zoneinfo_gate'
+                    minStep: "30s"
+                    seriesNameFormat: "Kernelcore used - {{node}} · NUMA {{numa}}"
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+                    query: 'kme_node_unmovable_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}'
+                    minStep: "30s"
+                    seriesNameFormat: "Unmovable freelist - {{node}} · NUMA {{numa}}"
 
       node_kernel_activity:
         kind: Panel
@@ -357,10 +468,16 @@ spec:
           items:
             - x: 0
               "y": 0
-              width: 24
+              width: 12
               height: 14
               content:
-                $ref: '#/spec/panels/node_thp_readiness'
+                $ref: '#/spec/panels/node_thp_readiness_movable'
+            - x: 12
+              "y": 0
+              width: 12
+              height: 14
+              content:
+                $ref: '#/spec/panels/node_thp_readiness_unmovable'
             - x: 0
               "y": 14
               width: 12

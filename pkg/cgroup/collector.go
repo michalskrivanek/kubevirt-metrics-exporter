@@ -93,43 +93,57 @@ var (
 
 	movableOrderGe9Desc = prometheus.NewDesc(
 		"kme_node_movable_bytes_order_ge_9",
-		"Movable-capable free buddy memory at page order 9 and above in bytes (Normal zone; buddy minus pagetype Unmovable and Isolate)",
+		"Movable-capable free buddy memory at page order 9 and above in bytes (Movable zone if present, else Normal; buddy minus pagetype Unmovable and Isolate)",
 		[]string{"node", "numa"},
 		nil,
 	)
 
 	movableAllOrdersDesc = prometheus.NewDesc(
 		"kme_node_movable_bytes_all_orders",
-		"Movable-capable free buddy memory across all page orders in bytes (Normal zone; buddy minus pagetype Unmovable and Isolate)",
+		"Movable-capable free buddy memory across all page orders in bytes (Movable zone if present, else Normal; buddy minus pagetype Unmovable and Isolate)",
 		[]string{"node", "numa"},
 		nil,
 	)
 
 	buddyOrderGe9Desc = prometheus.NewDesc(
 		"kme_node_buddy_bytes_order_ge_9",
-		"Total free buddy memory at page order 9 and above in bytes (Normal zone, exact from /proc/buddyinfo)",
+		"Total free buddy memory at page order 9 and above in bytes (Movable zone if present, else Normal; exact from /proc/buddyinfo)",
 		[]string{"node", "numa"},
 		nil,
 	)
 
 	buddyAllOrdersDesc = prometheus.NewDesc(
 		"kme_node_buddy_bytes_all_orders",
-		"Total free buddy memory across all page orders in bytes (Normal zone, exact from /proc/buddyinfo)",
+		"Total free buddy memory across all page orders in bytes (Movable zone if present, else Normal; exact from /proc/buddyinfo)",
 		[]string{"node", "numa"},
 		nil,
 	)
 
 	unmovableOrderGe9Desc = prometheus.NewDesc(
 		"kme_node_unmovable_bytes_order_ge_9",
-		"Unmovable free buddy memory at page order 9 and above in bytes (Normal zone, from /proc/pagetypinfo)",
+		"Unmovable free buddy memory at page order 9 and above in bytes (Normal + Movable zones, from /proc/pagetypinfo)",
 		[]string{"node", "numa"},
 		nil,
 	)
 
 	unmovableAllOrdersDesc = prometheus.NewDesc(
 		"kme_node_unmovable_bytes_all_orders",
-		"Unmovable free buddy memory across all page orders in bytes (Normal zone, from /proc/pagetypinfo)",
+		"Unmovable free buddy memory across all page orders in bytes (Normal + Movable zones, from /proc/pagetypinfo)",
 		[]string{"node", "numa"},
+		nil,
+	)
+
+	zonePresentBytesDesc = prometheus.NewDesc(
+		"kme_node_zone_present_bytes",
+		"Zone size in bytes from /proc/zoneinfo present pages (structural layout; DMA+DMA32+Normal reflect kernelcore pool)",
+		[]string{"node", "numa", "zone"},
+		nil,
+	)
+
+	zoneFreeBytesDesc = prometheus.NewDesc(
+		"kme_node_zone_free_bytes",
+		"Zone free pages in bytes from /proc/zoneinfo pages free (buddy freelist within the zone)",
+		[]string{"node", "numa", "zone"},
 		nil,
 	)
 )
@@ -181,7 +195,10 @@ type nodeStats struct {
 	buddyByNuma        []numaBuddyFree
 	buddyAvailable     bool
 	excludedByNuma     []numaPagetypeExcluded
+	unmovableByNuma    []numaPagetypeExcluded
 	pagetypeAvailable  bool
+	zoneByNuma         []numaZoneMemory
+	zoneinfoAvailable  bool
 }
 
 type Collector struct {
@@ -258,6 +275,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- buddyAllOrdersDesc
 	ch <- unmovableOrderGe9Desc
 	ch <- unmovableAllOrdersDesc
+	ch <- zonePresentBytesDesc
+	ch <- zoneFreeBytesDesc
 	ch <- scrapeErrorsDesc
 	ch <- lastPollDesc
 }
@@ -293,13 +312,15 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	if c.node.buddyAvailable {
 		excludedByNUMA := excludedByNUMAMap(c.node.excludedByNuma)
+		unmovableByNUMA := excludedByNUMAMap(c.node.unmovableByNuma)
 		for _, b := range c.node.buddyByNuma {
 			ch <- prometheus.MustNewConstMetric(buddyOrderGe9Desc, prometheus.GaugeValue, float64(b.OrderGe9Bytes), c.cfg.NodeName, b.NUMA)
 			ch <- prometheus.MustNewConstMetric(buddyAllOrdersDesc, prometheus.GaugeValue, float64(b.AllOrdersBytes), c.cfg.NodeName, b.NUMA)
 			if c.node.pagetypeAvailable {
 				e := excludedByNUMA[b.NUMA]
-				ch <- prometheus.MustNewConstMetric(unmovableOrderGe9Desc, prometheus.GaugeValue, float64(e.UnmovableOrderGe9Bytes), c.cfg.NodeName, b.NUMA)
-				ch <- prometheus.MustNewConstMetric(unmovableAllOrdersDesc, prometheus.GaugeValue, float64(e.UnmovableAllOrdersBytes), c.cfg.NodeName, b.NUMA)
+				u := unmovableByNUMA[b.NUMA]
+				ch <- prometheus.MustNewConstMetric(unmovableOrderGe9Desc, prometheus.GaugeValue, float64(u.UnmovableOrderGe9Bytes), c.cfg.NodeName, b.NUMA)
+				ch <- prometheus.MustNewConstMetric(unmovableAllOrdersDesc, prometheus.GaugeValue, float64(u.UnmovableAllOrdersBytes), c.cfg.NodeName, b.NUMA)
 				movableGe9 := subtractExcludedBytes(b.OrderGe9Bytes, e.excludedOrderGe9Bytes())
 				movableAll := subtractExcludedBytes(b.AllOrdersBytes, e.excludedAllOrdersBytes())
 				ch <- prometheus.MustNewConstMetric(movableOrderGe9Desc, prometheus.GaugeValue, float64(movableGe9), c.cfg.NodeName, b.NUMA)
@@ -307,9 +328,15 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			}
 		}
 	} else if c.node.pagetypeAvailable {
-		for _, e := range c.node.excludedByNuma {
+		for _, e := range c.node.unmovableByNuma {
 			ch <- prometheus.MustNewConstMetric(unmovableOrderGe9Desc, prometheus.GaugeValue, float64(e.UnmovableOrderGe9Bytes), c.cfg.NodeName, e.NUMA)
 			ch <- prometheus.MustNewConstMetric(unmovableAllOrdersDesc, prometheus.GaugeValue, float64(e.UnmovableAllOrdersBytes), c.cfg.NodeName, e.NUMA)
+		}
+	}
+	if c.node.zoneinfoAvailable {
+		for _, z := range c.node.zoneByNuma {
+			ch <- prometheus.MustNewConstMetric(zonePresentBytesDesc, prometheus.GaugeValue, float64(z.PresentBytes), c.cfg.NodeName, z.NUMA, z.Zone)
+			ch <- prometheus.MustNewConstMetric(zoneFreeBytesDesc, prometheus.GaugeValue, float64(z.FreeBytes), c.cfg.NodeName, z.NUMA, z.Zone)
 		}
 	}
 }
@@ -429,18 +456,30 @@ func (c *Collector) collectNodeStats() nodeStats {
 		ns.thpVMStatAvailable = true
 	}
 
-	if buddy, err := readBuddyNormal(c.cfg.ProcPath); err != nil {
+	if buddy, err := readBuddyTHPZone(c.cfg.ProcPath); err != nil {
 		c.log.Debug("cgroup: reading buddyinfo", "error", err)
 	} else {
 		ns.buddyByNuma = buddy
 		ns.buddyAvailable = true
 	}
 
-	if excluded, err := readPagetypeExcludedNormal(c.cfg.ProcPath); err != nil {
-		c.log.Debug("cgroup: reading pagetypeinfo excluded migratypes", "error", err)
+	if excluded, err := readPagetypeExcludedTHPZone(c.cfg.ProcPath); err != nil {
+		c.log.Debug("cgroup: reading pagetypeinfo THP-zone excluded migratypes", "error", err)
 	} else {
+		unmovable, err := readPagetypeUnmovableSum(c.cfg.ProcPath)
+		if err != nil {
+			c.log.Debug("cgroup: reading pagetypeinfo unmovable sum", "error", err)
+		}
 		ns.excludedByNuma = excluded
+		ns.unmovableByNuma = unmovable
 		ns.pagetypeAvailable = true
+	}
+
+	if zones, err := readZoneinfo(c.cfg.ProcPath); err != nil {
+		c.log.Debug("cgroup: reading zoneinfo", "error", err)
+	} else {
+		ns.zoneByNuma = zones
+		ns.zoneinfoAvailable = true
 	}
 
 	return ns

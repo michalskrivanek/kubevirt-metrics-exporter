@@ -282,6 +282,27 @@ var _ = Describe("readVMStatTHP", func() {
 	})
 })
 
+var _ = Describe("readBuddyTHPZone", func() {
+	var procRoot string
+
+	BeforeEach(func() {
+		procRoot = GinkgoT().TempDir()
+	})
+
+	It("prefers Movable zone when present", func() {
+		Expect(os.WriteFile(filepath.Join(procRoot, "buddyinfo"), []byte(
+			"Node 0, zone   Normal      1      0      0      0      0      0      0      0      0      0      0\n"+
+				"Node 0, zone  Movable      0      0      0      0      0      0      0      0      0      1      0\n",
+		), 0644)).To(Succeed())
+
+		results, err := readBuddyTHPZone(procRoot)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results).To(HaveLen(1))
+		Expect(results[0].Zone).To(Equal("Movable"))
+		Expect(results[0].OrderGe9Bytes).To(Equal(uint64(4096 * 512)))
+	})
+})
+
 var _ = Describe("readBuddyNormal", func() {
 	var procRoot string
 
@@ -422,6 +443,21 @@ var _ = Describe("readPagetypeExcludedNormal", func() {
 		Expect(results[1].NUMA).To(Equal("1"))
 	})
 
+	It("returns zero excluded entries when Unmovable and Isolate freelists are empty", func() {
+		Expect(os.WriteFile(filepath.Join(procRoot, "pagetypeinfo"), []byte(
+			"Free pages count per migrate type at order       0      1      2      3      4      5      6      7      8      9     10\n"+
+				"Node    0, zone  Movable, type    Unmovable      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"Node    0, zone  Movable, type      Isolate      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"Number of blocks type    Unmovable Reclaimable Movable Reserve Isolate\n",
+		), 0644)).To(Succeed())
+
+		results, err := readPagetypeExcludedZone(procRoot, buddyZoneMovable)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results).To(HaveLen(1))
+		Expect(results[0].NUMA).To(Equal("0"))
+		Expect(results[0].excludedAllOrdersBytes()).To(Equal(uint64(0)))
+	})
+
 	It("returns error when Normal entries are missing", func() {
 		Expect(os.WriteFile(filepath.Join(procRoot, "pagetypeinfo"), []byte(
 			"Free pages count per migrate type at order       0\n"+
@@ -520,6 +556,8 @@ var _ = Describe("collectNodeStats", func() {
 		Expect(ns.excludedByNuma).To(HaveLen(1))
 		Expect(ns.excludedByNuma[0].UnmovableOrderGe9Bytes).To(Equal(uint64(4096 * 512)))
 		Expect(ns.excludedByNuma[0].UnmovableAllOrdersBytes).To(Equal(uint64(2*4096) + uint64(4096*512)))
+		Expect(ns.unmovableByNuma).To(HaveLen(1))
+		Expect(ns.unmovableByNuma[0].UnmovableAllOrdersBytes).To(Equal(uint64(2*4096) + uint64(4096*512)))
 		Expect(ns.ksmProfitAvailable).To(BeTrue())
 		Expect(ns.ksmProfit).To(Equal(int64(4096)))
 	})
@@ -616,6 +654,9 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 			excludedByNuma: []numaPagetypeExcluded{
 				{NUMA: "0", UnmovableOrderGe9Bytes: 8192, UnmovableAllOrdersBytes: 8192},
 			},
+			unmovableByNuma: []numaPagetypeExcluded{
+				{NUMA: "0", UnmovableOrderGe9Bytes: 8192, UnmovableAllOrdersBytes: 8192},
+			},
 			pagetypeAvailable: true,
 		}
 		c.lastPollTS = 1000
@@ -678,6 +719,25 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 		m = metrics["kme_node_movable_bytes_all_orders"]
 		Expect(m).To(HaveLen(1))
 		Expect(m[0].Gauge.GetValue()).To(Equal(float64(6295552)))
+
+		By("checking zoneinfo metrics")
+		c.mu.Lock()
+		c.node.zoneByNuma = []numaZoneMemory{
+			{NUMA: "0", Zone: "DMA32", PresentBytes: 1024, FreeBytes: 256},
+			{NUMA: "0", Zone: "Movable", PresentBytes: 2048, FreeBytes: 512},
+		}
+		c.node.zoneinfoAvailable = true
+		c.mu.Unlock()
+		metrics = collectMetrics(c)
+
+		m = metrics["kme_node_zone_present_bytes"]
+		Expect(m).To(HaveLen(2))
+		checkLabels(m[0], map[string]string{"node": "node1", "numa": "0", "zone": "DMA32"})
+		Expect(m[0].Gauge.GetValue()).To(Equal(float64(1024)))
+
+		m = metrics["kme_node_zone_free_bytes"]
+		Expect(m).To(HaveLen(2))
+		Expect(m[0].Gauge.GetValue()).To(Equal(float64(256)))
 	})
 
 	It("emits unmovable and movable metrics for every buddy NUMA node", func() {
@@ -697,6 +757,9 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 			},
 			buddyAvailable: true,
 			excludedByNuma: []numaPagetypeExcluded{
+				{NUMA: "0", UnmovableOrderGe9Bytes: 100, UnmovableAllOrdersBytes: 200},
+			},
+			unmovableByNuma: []numaPagetypeExcluded{
 				{NUMA: "0", UnmovableOrderGe9Bytes: 100, UnmovableAllOrdersBytes: 200},
 			},
 			pagetypeAvailable: true,
