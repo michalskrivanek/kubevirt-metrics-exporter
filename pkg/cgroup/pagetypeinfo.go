@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -60,8 +61,12 @@ func readPagetypeExcludedNormal(procPath string) ([]numaPagetypeExcluded, error)
 		if !inFreeSection {
 			continue
 		}
-		if strings.HasPrefix(line, "Number of blocks") || line == "" {
-			break
+		if strings.HasPrefix(line, "Number of blocks") {
+			inFreeSection = false
+			continue
+		}
+		if line == "" {
+			continue
 		}
 
 		parts := strings.Fields(line)
@@ -134,7 +139,19 @@ func readPagetypeExcludedNormal(procPath string) ([]numaPagetypeExcluded, error)
 		return nil, fmt.Errorf("pagetypeinfo: Normal zone Unmovable/Isolate entries not found")
 	}
 
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].NUMA < results[j].NUMA
+	})
+
 	return results, nil
+}
+
+func excludedByNUMAMap(excluded []numaPagetypeExcluded) map[string]numaPagetypeExcluded {
+	byNUMA := make(map[string]numaPagetypeExcluded, len(excluded))
+	for _, e := range excluded {
+		byNUMA[e.NUMA] = e
+	}
+	return byNUMA
 }
 
 // parsePagetypePageCount parses a free-page count from pagetypeinfo.

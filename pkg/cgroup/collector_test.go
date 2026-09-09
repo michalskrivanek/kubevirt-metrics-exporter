@@ -356,6 +356,72 @@ var _ = Describe("readPagetypeExcludedNormal", func() {
 		Expect(results[1].excludedOrderGe9Bytes()).To(Equal(2 * order10Bytes))
 	})
 
+	It("continues parsing after blank lines between NUMA nodes", func() {
+		Expect(os.WriteFile(filepath.Join(procRoot, "pagetypeinfo"), []byte(
+			"Page block order: 9\n"+
+				"Pages per block: 512\n\n"+
+				"Free pages count per migrate type at order       0      1      2      3      4      5      6      7      8      9     10\n"+
+				"Node    0, zone   Normal, type    Unmovable      2      0      0      0      0      0      0      0      0      1      0\n"+
+				"Node    0, zone   Normal, type      Isolate      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"\n"+
+				"Node    1, zone   Normal, type    Unmovable      0      0      0      0      0      0      0      0      0      0      2\n"+
+				"Node    1, zone   Normal, type      Isolate      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"Number of blocks type    Unmovable Reclaimable Movable Reserve Isolate\n",
+		), 0644)).To(Succeed())
+
+		results, err := readPagetypeExcludedNormal(procRoot)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results).To(HaveLen(2))
+		Expect(results[0].NUMA).To(Equal("0"))
+		Expect(results[1].NUMA).To(Equal("1"))
+	})
+
+	It("parses single-NUMA pagetypeinfo with one free-pages section", func() {
+		src, err := os.ReadFile(filepath.Join("testdata", "pagetypeinfo_single_numa_movable"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(filepath.Join(procRoot, "pagetypeinfo"), src, 0644)).To(Succeed())
+
+		results, err := readPagetypeExcludedNormal(procRoot)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results).To(HaveLen(1))
+		Expect(results[0].NUMA).To(Equal("0"))
+		Expect(results[0].UnmovableAllOrdersBytes).To(Equal(uint64(21*pagetypePageSize + 9*(pagetypePageSize<<2) + 51*(pagetypePageSize<<3) + 233*(pagetypePageSize<<4) + 52*(pagetypePageSize<<5) + 6*(pagetypePageSize<<6) + 1*(pagetypePageSize<<7))))
+	})
+
+	It("parses per-node pagetypeinfo sections separated by Number of blocks", func() {
+		src, err := os.ReadFile(filepath.Join("testdata", "pagetypeinfo_per_node_sections"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(filepath.Join(procRoot, "pagetypeinfo"), src, 0644)).To(Succeed())
+
+		results, err := readPagetypeExcludedNormal(procRoot)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results).To(HaveLen(2))
+		Expect(results[0].NUMA).To(Equal("0"))
+		Expect(results[1].NUMA).To(Equal("1"))
+		Expect(results[0].UnmovableAllOrdersBytes).To(BeNumerically(">", 0))
+		Expect(results[1].UnmovableAllOrdersBytes).To(BeNumerically(">", 0))
+	})
+
+	It("parses Normal zone entries after other zones in kernel node order", func() {
+		Expect(os.WriteFile(filepath.Join(procRoot, "pagetypeinfo"), []byte(
+			"Free pages count per migrate type at order       0      1      2      3      4      5      6      7      8      9     10\n"+
+				"Node    0, zone      DMA, type    Unmovable      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"Node    0, zone    DMA32, type    Unmovable      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"Node    0, zone   Normal, type    Unmovable      2      0      0      0      0      0      0      0      0      0      0\n"+
+				"Node    0, zone   Normal, type      Isolate      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"Node    1, zone      DMA, type    Unmovable      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"Node    1, zone    DMA32, type    Unmovable      0      0      0      0      0      0      0      0      0      0      0\n"+
+				"Node    1, zone   Normal, type    Unmovable      0      0      0      0      0      0      0      0      0      0      2\n"+
+				"Number of blocks type    Unmovable Reclaimable Movable Reserve Isolate\n",
+		), 0644)).To(Succeed())
+
+		results, err := readPagetypeExcludedNormal(procRoot)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results).To(HaveLen(2))
+		Expect(results[0].NUMA).To(Equal("0"))
+		Expect(results[1].NUMA).To(Equal("1"))
+	})
+
 	It("returns error when Normal entries are missing", func() {
 		Expect(os.WriteFile(filepath.Join(procRoot, "pagetypeinfo"), []byte(
 			"Free pages count per migrate type at order       0\n"+
@@ -612,6 +678,45 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 		m = metrics["kme_node_movable_bytes_all_orders"]
 		Expect(m).To(HaveLen(1))
 		Expect(m[0].Gauge.GetValue()).To(Equal(float64(6295552)))
+	})
+
+	It("emits unmovable and movable metrics for every buddy NUMA node", func() {
+		store := fakePodStore()
+
+		c := NewCollector(Config{
+			NodeName:   "node1",
+			CgroupRoot: "/unused",
+			ProcPath:   "/unused",
+		}, store, nil, slog.Default())
+
+		c.mu.Lock()
+		c.node = nodeStats{
+			buddyByNuma: []numaBuddyFree{
+				{NUMA: "0", OrderGe9Bytes: 1000, AllOrdersBytes: 2000},
+				{NUMA: "1", OrderGe9Bytes: 3000, AllOrdersBytes: 4000},
+			},
+			buddyAvailable: true,
+			excludedByNuma: []numaPagetypeExcluded{
+				{NUMA: "0", UnmovableOrderGe9Bytes: 100, UnmovableAllOrdersBytes: 200},
+			},
+			pagetypeAvailable: true,
+		}
+		c.lastPollTS = 1000
+		c.mu.Unlock()
+
+		metrics := collectMetrics(c)
+
+		m := metrics["kme_node_unmovable_bytes_all_orders"]
+		Expect(m).To(HaveLen(2))
+		checkLabels(m[0], map[string]string{"node": "node1", "numa": "0"})
+		checkLabels(m[1], map[string]string{"node": "node1", "numa": "1"})
+		Expect(m[0].Gauge.GetValue()).To(Equal(float64(200)))
+		Expect(m[1].Gauge.GetValue()).To(Equal(float64(0)))
+
+		m = metrics["kme_node_movable_bytes_all_orders"]
+		Expect(m).To(HaveLen(2))
+		Expect(m[0].Gauge.GetValue()).To(Equal(float64(1800)))
+		Expect(m[1].Gauge.GetValue()).To(Equal(float64(4000)))
 	})
 
 	It("omits node metrics when kernel threads are not available", func() {

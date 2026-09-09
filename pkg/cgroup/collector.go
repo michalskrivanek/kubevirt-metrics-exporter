@@ -292,31 +292,24 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(thpCollapseAllocDesc, prometheus.CounterValue, float64(c.node.thpCollapseAlloc), c.cfg.NodeName)
 	}
 	if c.node.buddyAvailable {
+		excludedByNUMA := excludedByNUMAMap(c.node.excludedByNuma)
 		for _, b := range c.node.buddyByNuma {
 			ch <- prometheus.MustNewConstMetric(buddyOrderGe9Desc, prometheus.GaugeValue, float64(b.OrderGe9Bytes), c.cfg.NodeName, b.NUMA)
 			ch <- prometheus.MustNewConstMetric(buddyAllOrdersDesc, prometheus.GaugeValue, float64(b.AllOrdersBytes), c.cfg.NodeName, b.NUMA)
+			if c.node.pagetypeAvailable {
+				e := excludedByNUMA[b.NUMA]
+				ch <- prometheus.MustNewConstMetric(unmovableOrderGe9Desc, prometheus.GaugeValue, float64(e.UnmovableOrderGe9Bytes), c.cfg.NodeName, b.NUMA)
+				ch <- prometheus.MustNewConstMetric(unmovableAllOrdersDesc, prometheus.GaugeValue, float64(e.UnmovableAllOrdersBytes), c.cfg.NodeName, b.NUMA)
+				movableGe9 := subtractExcludedBytes(b.OrderGe9Bytes, e.excludedOrderGe9Bytes())
+				movableAll := subtractExcludedBytes(b.AllOrdersBytes, e.excludedAllOrdersBytes())
+				ch <- prometheus.MustNewConstMetric(movableOrderGe9Desc, prometheus.GaugeValue, float64(movableGe9), c.cfg.NodeName, b.NUMA)
+				ch <- prometheus.MustNewConstMetric(movableAllOrdersDesc, prometheus.GaugeValue, float64(movableAll), c.cfg.NodeName, b.NUMA)
+			}
 		}
-	}
-	if c.node.pagetypeAvailable {
+	} else if c.node.pagetypeAvailable {
 		for _, e := range c.node.excludedByNuma {
 			ch <- prometheus.MustNewConstMetric(unmovableOrderGe9Desc, prometheus.GaugeValue, float64(e.UnmovableOrderGe9Bytes), c.cfg.NodeName, e.NUMA)
 			ch <- prometheus.MustNewConstMetric(unmovableAllOrdersDesc, prometheus.GaugeValue, float64(e.UnmovableAllOrdersBytes), c.cfg.NodeName, e.NUMA)
-		}
-	}
-	if c.node.buddyAvailable && c.node.pagetypeAvailable {
-		excludedByNUMA := make(map[string]numaPagetypeExcluded, len(c.node.excludedByNuma))
-		for _, e := range c.node.excludedByNuma {
-			excludedByNUMA[e.NUMA] = e
-		}
-		for _, b := range c.node.buddyByNuma {
-			e, ok := excludedByNUMA[b.NUMA]
-			if !ok {
-				continue
-			}
-			movableGe9 := subtractExcludedBytes(b.OrderGe9Bytes, e.excludedOrderGe9Bytes())
-			movableAll := subtractExcludedBytes(b.AllOrdersBytes, e.excludedAllOrdersBytes())
-			ch <- prometheus.MustNewConstMetric(movableOrderGe9Desc, prometheus.GaugeValue, float64(movableGe9), c.cfg.NodeName, b.NUMA)
-			ch <- prometheus.MustNewConstMetric(movableAllOrdersDesc, prometheus.GaugeValue, float64(movableAll), c.cfg.NodeName, b.NUMA)
 		}
 	}
 }
