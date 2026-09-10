@@ -28,36 +28,19 @@ type numaBuddyFree struct {
 	AllOrdersBytes uint64
 }
 
+// buddySnapshot is parsed from a single /proc/buddyinfo read.
+type buddySnapshot struct {
+	zonesByNUMA map[string]map[string]bool
+	thpByNUMA   []numaBuddyFree
+}
+
 // buddyZonesByNUMA reports which buddy zones exist for each NUMA node.
 func buddyZonesByNUMA(procPath string) (map[string]map[string]bool, error) {
-	f, err := os.Open(filepath.Join(procPath, "buddyinfo"))
+	snap, err := readBuddySnapshot(procPath)
 	if err != nil {
-		return nil, fmt.Errorf("opening buddyinfo: %w", err)
+		return nil, err
 	}
-	defer f.Close()
-
-	byNUMA := make(map[string]map[string]bool)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.Fields(line)
-		if len(parts) < 5 || parts[0] != "Node" || parts[2] != "zone" {
-			continue
-		}
-		numa := strings.TrimSuffix(parts[1], ",")
-		zone := strings.TrimSuffix(parts[3], ",")
-		if byNUMA[numa] == nil {
-			byNUMA[numa] = make(map[string]bool)
-		}
-		byNUMA[numa][zone] = true
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading buddyinfo: %w", err)
-	}
-	if len(byNUMA) == 0 {
-		return nil, fmt.Errorf("buddyinfo: no NUMA entries found")
-	}
-	return byNUMA, nil
+	return snap.zonesByNUMA, nil
 }
 
 func thpBuddyZone(zones map[string]bool) string {
@@ -82,21 +65,18 @@ func buddyBytesFromCounts(counts []string) (orderGe9, allOrders uint64, err erro
 	return orderGe9, allOrders, nil
 }
 
-// readBuddyTHPZone parses /proc/buddyinfo for the THP buddy zone per NUMA node:
-// Movable when that zone exists on the node, otherwise Normal.
-func readBuddyTHPZone(procPath string) ([]numaBuddyFree, error) {
+// readBuddySnapshot parses /proc/buddyinfo once and returns zone layout plus
+// THP-zone free block counts per NUMA node.
+func readBuddySnapshot(procPath string) (buddySnapshot, error) {
 	f, err := os.Open(filepath.Join(procPath, "buddyinfo"))
 	if err != nil {
-		return nil, fmt.Errorf("opening buddyinfo: %w", err)
+		return buddySnapshot{}, fmt.Errorf("opening buddyinfo: %w", err)
 	}
 	defer f.Close()
 
-	zonesByNUMA, err := buddyZonesByNUMA(procPath)
-	if err != nil {
-		return nil, err
-	}
+	zonesByNUMA := make(map[string]map[string]bool)
+	freeByNUMAZone := make(map[string]map[string]numaBuddyFree)
 
-	byNUMAZone := make(map[string]map[string]numaBuddyFree)
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -106,19 +86,19 @@ func readBuddyTHPZone(procPath string) ([]numaBuddyFree, error) {
 		}
 		numa := strings.TrimSuffix(parts[1], ",")
 		zone := strings.TrimSuffix(parts[3], ",")
-		thpZone := thpBuddyZone(zonesByNUMA[numa])
-		if zone != thpZone {
-			continue
+		if zonesByNUMA[numa] == nil {
+			zonesByNUMA[numa] = make(map[string]bool)
 		}
+		zonesByNUMA[numa][zone] = true
 
 		orderGe9, allOrders, err := buddyBytesFromCounts(parts[4:])
 		if err != nil {
-			return nil, fmt.Errorf("buddyinfo NUMA %s: %w", numa, err)
+			return buddySnapshot{}, fmt.Errorf("buddyinfo NUMA %s: %w", numa, err)
 		}
-		if byNUMAZone[numa] == nil {
-			byNUMAZone[numa] = make(map[string]numaBuddyFree)
+		if freeByNUMAZone[numa] == nil {
+			freeByNUMAZone[numa] = make(map[string]numaBuddyFree)
 		}
-		byNUMAZone[numa][zone] = numaBuddyFree{
+		freeByNUMAZone[numa][zone] = numaBuddyFree{
 			NUMA:           numa,
 			Zone:           zone,
 			OrderGe9Bytes:  orderGe9,
@@ -126,27 +106,43 @@ func readBuddyTHPZone(procPath string) ([]numaBuddyFree, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading buddyinfo: %w", err)
+		return buddySnapshot{}, fmt.Errorf("reading buddyinfo: %w", err)
+	}
+	if len(zonesByNUMA) == 0 {
+		return buddySnapshot{}, fmt.Errorf("buddyinfo: no NUMA entries found")
 	}
 
-	results := make([]numaBuddyFree, 0, len(zonesByNUMA))
+	thpByNUMA := make([]numaBuddyFree, 0, len(zonesByNUMA))
 	for numa, zones := range zonesByNUMA {
 		thpZone := thpBuddyZone(zones)
-		entry, ok := byNUMAZone[numa][thpZone]
+		entry, ok := freeByNUMAZone[numa][thpZone]
 		if !ok {
-			return nil, fmt.Errorf("buddyinfo: THP zone %s not found for NUMA %s", thpZone, numa)
+			return buddySnapshot{}, fmt.Errorf("buddyinfo: THP zone %s not found for NUMA %s", thpZone, numa)
 		}
-		results = append(results, entry)
+		thpByNUMA = append(thpByNUMA, entry)
 	}
-	if len(results) == 0 {
-		return nil, fmt.Errorf("buddyinfo: THP zone entries not found")
+	if len(thpByNUMA) == 0 {
+		return buddySnapshot{}, fmt.Errorf("buddyinfo: THP zone entries not found")
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].NUMA < results[j].NUMA
+	sort.Slice(thpByNUMA, func(i, j int) bool {
+		return thpByNUMA[i].NUMA < thpByNUMA[j].NUMA
 	})
 
-	return results, nil
+	return buddySnapshot{
+		zonesByNUMA: zonesByNUMA,
+		thpByNUMA:   thpByNUMA,
+	}, nil
+}
+
+// readBuddyTHPZone parses /proc/buddyinfo for the THP buddy zone per NUMA node:
+// Movable when that zone exists on the node, otherwise Normal.
+func readBuddyTHPZone(procPath string) ([]numaBuddyFree, error) {
+	snap, err := readBuddySnapshot(procPath)
+	if err != nil {
+		return nil, err
+	}
+	return snap.thpByNUMA, nil
 }
 
 // readBuddyNormal parses /proc/buddyinfo free block counts for the Normal zone per NUMA node.

@@ -21,6 +21,9 @@ const (
 	pagetypeSaturatedPageCeiling = 100000
 )
 
+// pagetypeExcludedByZone maps zone name to per-NUMA Unmovable/Isolate freelist bytes.
+type pagetypeExcludedByZone map[string]map[string]numaPagetypeExcluded
+
 // numaPagetypeExcluded holds pagetypeinfo free memory excluded from movable-capable
 // buddy stock (Unmovable and Isolate migratypes) for one NUMA node.
 type numaPagetypeExcluded struct {
@@ -55,88 +58,38 @@ func readPagetypeExcludedNormal(procPath string) ([]numaPagetypeExcluded, error)
 	return readPagetypeExcludedZone(procPath, buddyZoneNormal)
 }
 
-// readPagetypeExcludedTHPZone parses Unmovable and Isolate counts from the THP
-// buddy zone per NUMA node (Movable when present, else Normal).
-func readPagetypeExcludedTHPZone(procPath string) ([]numaPagetypeExcluded, error) {
-	zonesByNUMA, err := buddyZonesByNUMA(procPath)
+// readPagetypeBuddyStats reads /proc/pagetypeinfo once and derives THP-zone
+// excluded migratypes and the Normal+Movable unmovable sum. zonesByNUMA must
+// come from the same poll's buddyinfo read so buddyinfo is not opened again.
+func readPagetypeBuddyStats(procPath string, zonesByNUMA map[string]map[string]bool) (excludedTHP []numaPagetypeExcluded, unmovableSum []numaPagetypeExcluded, err error) {
+	byZone, err := readPagetypeExcludedAllZones(procPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	zoneEntries := make(map[string]map[string]numaPagetypeExcluded)
-	for _, zones := range zonesByNUMA {
-		zone := thpBuddyZone(zones)
-		if zoneEntries[zone] != nil {
-			continue
-		}
-		entries, err := readPagetypeExcludedZone(procPath, zone)
-		if err != nil {
-			return nil, err
-		}
-		zoneEntries[zone] = excludedByNUMAMap(entries)
-	}
-
-	results := make([]numaPagetypeExcluded, 0, len(zonesByNUMA))
-	for numa, zones := range zonesByNUMA {
-		zone := thpBuddyZone(zones)
-		entry, ok := zoneEntries[zone][numa]
-		if !ok {
-			entry = numaPagetypeExcluded{NUMA: numa}
-		}
-		results = append(results, entry)
-	}
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].NUMA < results[j].NUMA
-	})
-	return results, nil
-}
-
-// readPagetypeUnmovableSum parses Unmovable and Isolate free page counts summed
-// across Normal and Movable zones per NUMA node.
-func readPagetypeUnmovableSum(procPath string) ([]numaPagetypeExcluded, error) {
-	normal, err := readPagetypeExcludedZone(procPath, buddyZoneNormal)
+	excludedTHP, err = pagetypeExcludedTHPZone(byZone, zonesByNUMA)
 	if err != nil {
-		normal = nil
+		return nil, nil, err
 	}
-	movable, err := readPagetypeExcludedZone(procPath, buddyZoneMovable)
-	if err != nil {
-		movable = nil
-	}
-	if len(normal) == 0 && len(movable) == 0 {
-		return nil, nil
-	}
-
-	byNUMA := make(map[string]numaPagetypeExcluded)
-	for _, entry := range normal {
-		byNUMA[entry.NUMA] = entry
-	}
-	for _, entry := range movable {
-		if existing, ok := byNUMA[entry.NUMA]; ok {
-			byNUMA[entry.NUMA] = addPagetypeExcluded(existing, entry)
-		} else {
-			byNUMA[entry.NUMA] = entry
-		}
-	}
-
-	results := make([]numaPagetypeExcluded, 0, len(byNUMA))
-	for _, entry := range byNUMA {
-		results = append(results, entry)
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].NUMA < results[j].NUMA
-	})
-	return results, nil
+	return excludedTHP, pagetypeUnmovableSum(byZone), nil
 }
 
 func readPagetypeExcludedZone(procPath, zone string) ([]numaPagetypeExcluded, error) {
+	byZone, err := readPagetypeExcludedAllZones(procPath)
+	if err != nil {
+		return nil, err
+	}
+	return pagetypeExcludedForZone(byZone, zone)
+}
+
+func readPagetypeExcludedAllZones(procPath string) (pagetypeExcludedByZone, error) {
 	f, err := os.Open(filepath.Join(procPath, "pagetypeinfo"))
 	if err != nil {
 		return nil, fmt.Errorf("opening pagetypeinfo: %w", err)
 	}
 	defer f.Close()
 
-	byNUMA := make(map[string]*numaPagetypeExcluded)
+	byZone := make(pagetypeExcludedByZone)
 	inFreeSection := false
 
 	scanner := bufio.NewScanner(f)
@@ -162,28 +115,25 @@ func readPagetypeExcludedZone(procPath, zone string) ([]numaPagetypeExcluded, er
 			continue
 		}
 		lineZone := strings.TrimSuffix(parts[3], ",")
-		if lineZone != zone {
-			continue
-		}
-
 		migratype := parts[5]
-		var orderGe9Field, allOrdersField *uint64
 		switch migratype {
-		case "Unmovable":
-			// continue below
-		case "Isolate":
-			// continue below
+		case "Unmovable", "Isolate":
 		default:
 			continue
 		}
 
 		numa := strings.TrimSuffix(parts[1], ",")
-		entry, ok := byNUMA[numa]
-		if !ok {
-			entry = &numaPagetypeExcluded{NUMA: numa}
-			byNUMA[numa] = entry
+		zoneNUMA := byZone[lineZone]
+		if zoneNUMA == nil {
+			zoneNUMA = make(map[string]numaPagetypeExcluded)
+			byZone[lineZone] = zoneNUMA
+		}
+		entry := zoneNUMA[numa]
+		if entry.NUMA == "" {
+			entry.NUMA = numa
 		}
 
+		var orderGe9Field, allOrdersField *uint64
 		switch migratype {
 		case "Unmovable":
 			orderGe9Field = &entry.UnmovableOrderGe9Bytes
@@ -208,24 +158,89 @@ func readPagetypeExcludedZone(procPath, zone string) ([]numaPagetypeExcluded, er
 
 		*orderGe9Field = orderGe9
 		*allOrdersField = allOrders
+		zoneNUMA[numa] = entry
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("reading pagetypeinfo: %w", err)
 	}
-	if len(byNUMA) == 0 {
+	if len(byZone) == 0 {
+		return nil, fmt.Errorf("pagetypeinfo: no Unmovable/Isolate entries found")
+	}
+	return byZone, nil
+}
+
+func pagetypeExcludedForZone(byZone pagetypeExcludedByZone, zone string) ([]numaPagetypeExcluded, error) {
+	zoneNUMA := byZone[zone]
+	if len(zoneNUMA) == 0 {
 		return nil, fmt.Errorf("pagetypeinfo: %s zone Unmovable/Isolate entries not found", zone)
+	}
+
+	results := make([]numaPagetypeExcluded, 0, len(zoneNUMA))
+	for _, entry := range zoneNUMA {
+		results = append(results, entry)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].NUMA < results[j].NUMA
+	})
+	return results, nil
+}
+
+func pagetypeExcludedTHPZone(byZone pagetypeExcludedByZone, zonesByNUMA map[string]map[string]bool) ([]numaPagetypeExcluded, error) {
+	zoneEntries := make(map[string]map[string]numaPagetypeExcluded)
+	for _, zones := range zonesByNUMA {
+		zone := thpBuddyZone(zones)
+		if zoneEntries[zone] != nil {
+			continue
+		}
+		entries, err := pagetypeExcludedForZone(byZone, zone)
+		if err != nil {
+			return nil, err
+		}
+		zoneEntries[zone] = excludedByNUMAMap(entries)
+	}
+
+	results := make([]numaPagetypeExcluded, 0, len(zonesByNUMA))
+	for numa, zones := range zonesByNUMA {
+		zone := thpBuddyZone(zones)
+		entry, ok := zoneEntries[zone][numa]
+		if !ok {
+			entry = numaPagetypeExcluded{NUMA: numa}
+		}
+		results = append(results, entry)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].NUMA < results[j].NUMA
+	})
+	return results, nil
+}
+
+func pagetypeUnmovableSum(byZone pagetypeExcludedByZone) []numaPagetypeExcluded {
+	normal := byZone[buddyZoneNormal]
+	movable := byZone[buddyZoneMovable]
+	if len(normal) == 0 && len(movable) == 0 {
+		return nil
+	}
+
+	byNUMA := make(map[string]numaPagetypeExcluded)
+	for numa, entry := range normal {
+		byNUMA[numa] = entry
+	}
+	for numa, entry := range movable {
+		if existing, ok := byNUMA[numa]; ok {
+			byNUMA[numa] = addPagetypeExcluded(existing, entry)
+		} else {
+			byNUMA[numa] = entry
+		}
 	}
 
 	results := make([]numaPagetypeExcluded, 0, len(byNUMA))
 	for _, entry := range byNUMA {
-		results = append(results, *entry)
+		results = append(results, entry)
 	}
-
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].NUMA < results[j].NUMA
 	})
-
-	return results, nil
+	return results
 }
 
 func excludedByNUMAMap(excluded []numaPagetypeExcluded) map[string]numaPagetypeExcluded {

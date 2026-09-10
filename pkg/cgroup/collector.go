@@ -456,23 +456,26 @@ func (c *Collector) collectNodeStats() nodeStats {
 		ns.thpVMStatAvailable = true
 	}
 
-	if buddy, err := readBuddyTHPZone(c.cfg.ProcPath); err != nil {
-		c.log.Debug("cgroup: reading buddyinfo", "error", err)
+	buddySnap, buddyErr := readBuddySnapshot(c.cfg.ProcPath)
+	if buddyErr != nil {
+		c.log.Debug("cgroup: reading buddyinfo", "error", buddyErr)
 	} else {
-		ns.buddyByNuma = buddy
+		ns.buddyByNuma = buddySnap.thpByNUMA
 		ns.buddyAvailable = true
 	}
 
-	if excluded, err := readPagetypeExcludedTHPZone(c.cfg.ProcPath); err != nil {
-		c.log.Debug("cgroup: reading pagetypeinfo THP-zone excluded migratypes", "error", err)
-	} else {
-		unmovable, err := readPagetypeUnmovableSum(c.cfg.ProcPath)
-		if err != nil {
-			c.log.Debug("cgroup: reading pagetypeinfo unmovable sum", "error", err)
+	zonesByNUMA := buddySnap.zonesByNUMA
+	if buddyErr != nil {
+		zonesByNUMA, _ = buddyZonesByNUMA(c.cfg.ProcPath)
+	}
+	if zonesByNUMA != nil {
+		if excluded, unmovable, err := readPagetypeBuddyStats(c.cfg.ProcPath, zonesByNUMA); err != nil {
+			c.log.Debug("cgroup: reading pagetypeinfo", "error", err)
+		} else {
+			ns.excludedByNuma = excluded
+			ns.unmovableByNuma = unmovable
+			ns.pagetypeAvailable = true
 		}
-		ns.excludedByNuma = excluded
-		ns.unmovableByNuma = unmovable
-		ns.pagetypeAvailable = true
 	}
 
 	if zones, err := readZoneinfo(c.cfg.ProcPath); err != nil {
