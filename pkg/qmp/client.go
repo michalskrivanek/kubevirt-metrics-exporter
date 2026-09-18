@@ -50,6 +50,12 @@ type Client struct {
 	closeErr  error
 }
 
+// ClientForTest wraps an existing connection without a libvirt handshake.
+// Intended for cross-package tests of Close/Closed and collector recovery.
+func ClientForTest(conn net.Conn) *Client {
+	return &Client{conn: conn}
+}
+
 // Dial connects to a domain with a bounded connection setup time.
 func Dial(virtqemudSockPath, domainName string) (*Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultConnectTimeout)
