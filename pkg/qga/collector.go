@@ -71,10 +71,14 @@ type vmiResult struct {
 	Disks     []enrichedDisk
 }
 
+type computePIDFinder interface {
+	FindComputePID(context.Context, string, string) (*cri.ContainerInfo, error)
+}
+
 type Collector struct {
 	cfg       CollectorConfig
 	podStore  cache.Store
-	criClient *cri.Client
+	criClient computePIDFinder
 	dynClient dynamic.Interface
 	log       *slog.Logger
 
@@ -181,7 +185,6 @@ type podInfo struct {
 	vmiName   string
 }
 
-
 // scrapeBudget is the wall-clock deadline for one VM scrape: guest-exec plus
 // guest-exec-status polls and the sleeps between them, with a small margin.
 func (c *Collector) scrapeBudget() time.Duration {
@@ -248,6 +251,7 @@ func (c *Collector) poll(ctx context.Context) {
 	type target struct {
 		podInfo
 		containerID string
+		pid         int
 	}
 
 	var targets []target
@@ -260,6 +264,7 @@ func (c *Collector) poll(ctx context.Context) {
 		targets = append(targets, target{
 			podInfo:     pod,
 			containerID: info.ContainerID,
+			pid:         info.PID,
 		})
 	}
 
@@ -287,13 +292,7 @@ func (c *Collector) poll(ctx context.Context) {
 			continue
 		}
 
-		info, err := c.criClient.FindComputePID(ctx, t.podName, t.namespace)
-		if err != nil {
-			c.log.Warn("qga: getting PID for new VM", "namespace", t.namespace, "vmi", t.vmiName, "error", err)
-			continue
-		}
-
-		vs, err := c.connectVM(ctx, t.namespace, t.vmiName, t.podName, info.PID)
+		vs, err := c.connectVM(ctx, t.namespace, t.vmiName, t.podName, t.pid)
 		if err != nil {
 			c.log.Error("qga: connecting to VM", "namespace", t.namespace, "vmi", t.vmiName, "error", err)
 			continue
@@ -410,15 +409,29 @@ func (c *Collector) handleScrapeError(containerID string, vs *vmState, err error
 
 func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, error) {
 	vs.mu.Lock()
-	defer vs.mu.Unlock()
 	if vs.closed || vs.client.Closed() {
+		vs.mu.Unlock()
 		return nil, qmp.ErrClientClosed
 	}
+	client := vs.client
+	ns, vmi, podName := vs.namespace, vs.vmi, vs.podName
+	needDiskMap := vs.diskMap == nil
+	vs.mu.Unlock()
 
 	scrapeCtx, cancel := context.WithTimeout(ctx, c.scrapeBudget())
 	defer cancel()
 
-	counters, err := CollectDiskCounters(scrapeCtx, vs.client, c.cfg.QGATimeout, c.cfg.ExecWait, c.log, vs.vmi)
+	if needDiskMap {
+		if diskMap := c.tryBuildDiskMap(scrapeCtx, client, ns, vmi); diskMap != nil {
+			vs.mu.Lock()
+			if !vs.closed && vs.diskMap == nil {
+				vs.diskMap = diskMap
+			}
+			vs.mu.Unlock()
+		}
+	}
+
+	counters, err := CollectDiskCounters(scrapeCtx, client, c.cfg.QGATimeout, c.cfg.ExecWait, c.log, vmi)
 	if err != nil {
 		return nil, err
 	}
@@ -427,15 +440,21 @@ func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, erro
 	for _, dc := range counters {
 		currSnapshot[dc.Name] = dc
 		c.log.Debug("qga: raw counters",
-			"vmi", vs.vmi, "drive", dc.Name,
+			"vmi", vmi, "drive", dc.Name,
 			"rd_qlen", dc.RdQueueLen, "wr_qlen", dc.WrQueueLen,
 			"rd_ops", dc.RdOps, "wr_ops", dc.WrOps,
 			"ts", dc.Timestamp100ns)
 	}
 
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	if vs.closed {
+		return nil, qmp.ErrClientClosed
+	}
+
 	var disks []enrichedDisk
 	if vs.prevSnapshot == nil {
-		c.log.Debug("qga: first snapshot, no previous data to diff", "vmi", vs.vmi, "disks", len(currSnapshot))
+		c.log.Debug("qga: first snapshot, no previous data to diff", "vmi", vmi, "disks", len(currSnapshot))
 	}
 	if vs.prevSnapshot != nil {
 		pvcRefreshed := false
@@ -453,14 +472,14 @@ func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, erro
 						ed.PVC = vs.pvcMap[volName]
 						if ed.PVC == "" && !pvcRefreshed {
 							pvcRefreshed = true
-							vs.pvcMap = qmp.FetchPVCMap(scrapeCtx, c.dynClient, vs.namespace, vs.vmi, c.log)
+							vs.pvcMap = qmp.FetchPVCMap(scrapeCtx, c.dynClient, ns, vmi, c.log)
 							ed.PVC = vs.pvcMap[volName]
 						}
 					}
 				}
 				disks = append(disks, ed)
 				c.log.Debug("qga: computed metrics",
-					"vmi", vs.vmi, "drive", m.Name,
+					"vmi", vmi, "drive", m.Name,
 					"disk", ed.Disk, "pvc", ed.PVC,
 					"rd_lat_ms", m.RdLatSec*1000, "rd_iops", m.RdIOPS,
 					"wr_lat_ms", m.WrLatSec*1000, "wr_iops", m.WrIOPS,
@@ -477,12 +496,41 @@ func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, erro
 	}
 
 	return &vmiResult{
-		Namespace: vs.namespace,
-		Name:      vs.vmi,
+		Namespace: ns,
+		Name:      vmi,
 		Node:      c.cfg.NodeName,
-		PodName:   vs.podName,
+		PodName:   podName,
 		Disks:     disks,
 	}, nil
+}
+
+func (c *Collector) tryBuildDiskMap(ctx context.Context, client *qmp.Client, ns, vmi string) map[int]string {
+	domainXML, err := client.DomainGetXMLDesc()
+	if err != nil {
+		c.log.Warn("qga: DomainGetXMLDesc failed, disk mapping unavailable", "vmi", vmi, "error", err)
+		return nil
+	}
+	guestDisks, err := GuestGetDisks(ctx, client, c.cfg.QGATimeout)
+	if err != nil {
+		c.log.Warn("qga: guest-get-disks failed, disk mapping unavailable", "vmi", vmi, "error", err)
+		return nil
+	}
+	for _, gd := range guestDisks {
+		c.log.Debug("qga: guest-get-disks entry", "vmi", vmi,
+			"name", gd.Name, "drive_index", gd.DriveIndex, "serial", gd.Serial,
+			"ctrl_domain", gd.Location.Controller.Domain,
+			"ctrl_bus", gd.Location.Controller.Bus,
+			"ctrl_slot", gd.Location.Controller.Slot,
+			"ctrl_fn", gd.Location.Controller.Function,
+			"bus", gd.Location.Bus, "target", gd.Location.Target, "unit", gd.Location.Unit)
+	}
+	diskMap, err := BuildDiskMapping(domainXML, guestDisks)
+	if err != nil {
+		c.log.Warn("qga: building disk mapping failed", "vmi", vmi, "error", err)
+		return nil
+	}
+	c.log.Info("qga: disk mapping established", "vmi", vmi, "mappings", diskMap)
+	return diskMap
 }
 
 func (c *Collector) connectVM(ctx context.Context, ns, vmi, podName string, pid int) (*vmState, error) {
@@ -505,33 +553,7 @@ func (c *Collector) connectVM(ctx context.Context, ns, vmi, podName string, pid 
 	defer agentCancel()
 
 	pvcMap := qmp.FetchPVCMap(agentCtx, c.dynClient, ns, vmi, c.log)
-
-	var diskMap map[int]string
-	domainXML, err := client.DomainGetXMLDesc()
-	if err != nil {
-		c.log.Warn("qga: DomainGetXMLDesc failed, disk mapping unavailable", "vmi", vmi, "error", err)
-	} else {
-		guestDisks, err := GuestGetDisks(agentCtx, client, c.cfg.QGATimeout)
-		if err != nil {
-			c.log.Warn("qga: guest-get-disks failed, disk mapping unavailable", "vmi", vmi, "error", err)
-		} else {
-			for _, gd := range guestDisks {
-				c.log.Debug("qga: guest-get-disks entry", "vmi", vmi,
-					"name", gd.Name, "drive_index", gd.DriveIndex, "serial", gd.Serial,
-					"ctrl_domain", gd.Location.Controller.Domain,
-					"ctrl_bus", gd.Location.Controller.Bus,
-					"ctrl_slot", gd.Location.Controller.Slot,
-					"ctrl_fn", gd.Location.Controller.Function,
-					"bus", gd.Location.Bus, "target", gd.Location.Target, "unit", gd.Location.Unit)
-			}
-			diskMap, err = BuildDiskMapping(domainXML, guestDisks)
-			if err != nil {
-				c.log.Warn("qga: building disk mapping failed", "vmi", vmi, "error", err)
-			} else {
-				c.log.Info("qga: disk mapping established", "vmi", vmi, "mappings", diskMap)
-			}
-		}
-	}
+	diskMap := c.tryBuildDiskMap(agentCtx, client, ns, vmi)
 
 	return &vmState{
 		client:    client,
