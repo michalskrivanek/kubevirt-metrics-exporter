@@ -152,16 +152,35 @@ func GuestExecStatus(ctx context.Context, client *qmp.Client, pid int, timeout i
 	return er, nil
 }
 
+// guestExecStatusAttempts is the number of guest-exec-status polls in GuestExecWait.
+// Used by the collector to size the per-scrape context deadline.
+const guestExecStatusAttempts = 6
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // GuestExecWait polls guest-exec-status until the process exits or maxWait elapses.
 // Returns an error if the process does not exit in time or if the output is truncated.
 // Budget: initial sleep + (maxAttempts-1) retries with execWait between each.
 // With default execWait=1s and maxAttempts=6, total budget is ~6s which covers
 // PowerShell cold starts (~3s) with margin.
 func GuestExecWait(ctx context.Context, client *qmp.Client, pid int, timeout int32, execWait time.Duration) (*ExecResult, error) {
-	time.Sleep(execWait)
+	if err := sleepCtx(ctx, execWait); err != nil {
+		return nil, err
+	}
 
-	maxAttempts := 6
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := 0; attempt < guestExecStatusAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		result, err := GuestExecStatus(ctx, client, pid, timeout)
 		if err != nil {
 			return nil, err
@@ -174,12 +193,14 @@ func GuestExecWait(ctx context.Context, client *qmp.Client, pid int, timeout int
 			return result, nil
 		}
 
-		if attempt < maxAttempts-1 {
-			time.Sleep(execWait)
+		if attempt < guestExecStatusAttempts-1 {
+			if err := sleepCtx(ctx, execWait); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	return nil, fmt.Errorf("guest-exec pid %d did not exit after %d attempts", pid, maxAttempts)
+	return nil, fmt.Errorf("guest-exec pid %d did not exit after %d attempts", pid, guestExecStatusAttempts)
 }
 
 // GuestDisk represents a disk discovered via the guest-get-disks QGA command.
