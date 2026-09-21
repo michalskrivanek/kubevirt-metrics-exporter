@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -80,12 +81,7 @@ func main() {
 		startEBPF(ctx, cfg, stores, log)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ok")
-	})
+	mux := metricsHandler(cfg.HealthListenAddress == "")
 
 	var tlsConfig *tls.Config
 	if cfg.TLSCertFile != "" {
@@ -107,16 +103,37 @@ func main() {
 		}
 	}
 
-	var handler http.Handler = mux
+	handler := http.Handler(mux)
 	if tlsConfig != nil {
 		handler = metricstls.AllowPrometheusK8s(handler)
 	}
 	srv := &http.Server{Addr: cfg.ListenAddress, Handler: handler, TLSConfig: tlsConfig}
 
+	var healthSrv *http.Server
+	var healthListener net.Listener
+	if cfg.HealthListenAddress != "" {
+		var healthErr error
+		healthListener, healthErr = net.Listen("tcp", cfg.HealthListenAddress)
+		if healthErr != nil {
+			slog.Error("listen on health endpoint", "address", cfg.HealthListenAddress, "error", healthErr)
+			os.Exit(1)
+		}
+		healthSrv = &http.Server{Addr: cfg.HealthListenAddress, Handler: healthHandler()}
+		go func() {
+			if err := healthSrv.Serve(healthListener); err != nil && err != http.ErrServerClosed {
+				slog.Error("health server error", "error", err)
+			}
+		}()
+		slog.Info("health server starting", "address", cfg.HealthListenAddress)
+	}
+
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
+		if healthSrv != nil {
+			healthSrv.Shutdown(shutdownCtx)
+		}
 		srv.Shutdown(shutdownCtx)
 	}()
 
@@ -314,4 +331,22 @@ func setupLogging(level string) {
 		l = slog.LevelInfo
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: l})))
+}
+
+func healthHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok")
+	})
+	return mux
+}
+
+func metricsHandler(includeHealth bool) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	if includeHealth {
+		mux.Handle("/healthz", healthHandler())
+	}
+	return mux
 }

@@ -35,7 +35,7 @@ var _ = Describe("Metrics Exporter", func() {
 
 	Context("health endpoint", func() {
 		It("should return ok", func() {
-			body, err := utils.PortForwardAndGet(exporterNamespace, exporterPod, "/healthz")
+			body, err := utils.PortForwardAndGetOnPort(exporterNamespace, exporterPod, 8081, "/healthz")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(body).To(Equal("ok"))
 		})

@@ -46,10 +46,10 @@ patches:
       value: 8443
     - op: replace
       path: /spec/template/spec/containers/0/livenessProbe
-      value: {tcpSocket: {port: metrics}, initialDelaySeconds: 10, periodSeconds: 30}
+      value: {httpGet: {path: /healthz, port: health}, initialDelaySeconds: 10, periodSeconds: 30}
     - op: replace
       path: /spec/template/spec/containers/0/readinessProbe
-      value: {tcpSocket: {port: metrics}, initialDelaySeconds: 5, periodSeconds: 10}
+      value: {httpGet: {path: /healthz, port: health}, initialDelaySeconds: 5, periodSeconds: 10}
     - op: add
       path: /spec/template/spec/containers/0/volumeMounts/-
       value: {name: metrics-serving-cert, mountPath: /etc/tls/private, readOnly: true}

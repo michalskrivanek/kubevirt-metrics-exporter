@@ -90,6 +90,10 @@ func GetExporterPodName(namespace string) (string, error) {
 }
 
 func PortForwardAndGet(namespace, podName string, path string) (string, error) {
+	return PortForwardAndGetOnPort(namespace, podName, 8080, path)
+}
+
+func PortForwardAndGetOnPort(namespace, podName string, targetPort int, path string) (string, error) {
 	localPort, err := freePort()
 	if err != nil {
 		return "", fmt.Errorf("finding free port: %w", err)
@@ -99,7 +103,7 @@ func PortForwardAndGet(namespace, podName string, path string) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "kubectl", "port-forward",
-		"-n", namespace, podName, fmt.Sprintf("%d:8080", localPort))
+		"-n", namespace, podName, fmt.Sprintf("%d:%d", localPort, targetPort))
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
