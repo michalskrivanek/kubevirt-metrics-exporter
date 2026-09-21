@@ -16,7 +16,8 @@ import (
 	"github.com/openshift-virtualization/kubevirt-metrics-exporter/pkg/cri"
 )
 
-// Per-VMI memory metric descriptors (aligned with CRI-O PR #10143).
+// Per-VMI memory metric descriptors (aligned with CRI-O PR #10143;
+// file-LRU gauges with CRI-O PR #10368).
 var (
 	activeAnonDesc = prometheus.NewDesc(
 		"container_memory_active_anon_bytes",
@@ -28,6 +29,20 @@ var (
 	inactiveAnonDesc = prometheus.NewDesc(
 		"container_memory_inactive_anon_bytes",
 		"Inactive anonymous memory in bytes",
+		[]string{"namespace", "name", "node", "pod"},
+		nil,
+	)
+
+	totalActiveFileDesc = prometheus.NewDesc(
+		"container_memory_total_active_file_bytes",
+		"Current total active file in bytes.",
+		[]string{"namespace", "name", "node", "pod"},
+		nil,
+	)
+
+	totalInactiveFileDesc = prometheus.NewDesc(
+		"container_memory_total_inactive_file_bytes",
+		"Current total inactive file in bytes.",
 		[]string{"namespace", "name", "node", "pod"},
 		nil,
 	)
@@ -177,6 +192,8 @@ type vmiMemStats struct {
 	pod          string
 	activeAnon   uint64
 	inactiveAnon uint64
+	activeFile   uint64
+	inactiveFile uint64
 	anonTHP      uint64
 	shmemTHP     uint64
 	fileTHP      uint64
@@ -261,6 +278,8 @@ func (c *Collector) Run(ctx context.Context) {
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- activeAnonDesc
 	ch <- inactiveAnonDesc
+	ch <- totalActiveFileDesc
+	ch <- totalInactiveFileDesc
 	ch <- anonTHPDesc
 	ch <- shmemTHPDesc
 	ch <- fileTHPDesc
@@ -292,6 +311,8 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		labels := []string{s.namespace, s.name, c.cfg.NodeName, s.pod}
 		ch <- prometheus.MustNewConstMetric(activeAnonDesc, prometheus.GaugeValue, float64(s.activeAnon), labels...)
 		ch <- prometheus.MustNewConstMetric(inactiveAnonDesc, prometheus.GaugeValue, float64(s.inactiveAnon), labels...)
+		ch <- prometheus.MustNewConstMetric(totalActiveFileDesc, prometheus.GaugeValue, float64(s.activeFile), labels...)
+		ch <- prometheus.MustNewConstMetric(totalInactiveFileDesc, prometheus.GaugeValue, float64(s.inactiveFile), labels...)
 		ch <- prometheus.MustNewConstMetric(anonTHPDesc, prometheus.GaugeValue, float64(s.anonTHP), labels...)
 		ch <- prometheus.MustNewConstMetric(shmemTHPDesc, prometheus.GaugeValue, float64(s.shmemTHP), labels...)
 		ch <- prometheus.MustNewConstMetric(fileTHPDesc, prometheus.GaugeValue, float64(s.fileTHP), labels...)
@@ -393,6 +414,8 @@ func (c *Collector) poll(ctx context.Context) {
 			pod:          pod.Name,
 			activeAnon:   stat.activeAnon,
 			inactiveAnon: stat.inactiveAnon,
+			activeFile:   stat.activeFile,
+			inactiveFile: stat.inactiveFile,
 			anonTHP:      stat.anonTHP,
 			shmemTHP:     stat.shmemTHP,
 			fileTHP:      stat.fileTHP,

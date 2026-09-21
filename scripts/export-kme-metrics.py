@@ -21,7 +21,7 @@ from pathlib import Path
 
 METRIC_NAME_MATCHER = (
     "kme_.*|kubevirt_vmi_(storage|kvm)_.*|"
-    "container_memory_(active_anon|inactive_anon|anon_thp|shmem_thp|file_thp)_bytes|"
+    "container_memory_(active_anon|inactive_anon|total_active_file|total_inactive_file|anon_thp|shmem_thp|file_thp)_bytes|"
     "node_ksmd_general_profit_bytes"
 )
 DURATION_RE = re.compile(r"^(\d+)([smhdw])$")

@@ -15,6 +15,8 @@ import (
 type memoryStat struct {
 	activeAnon   uint64
 	inactiveAnon uint64
+	activeFile   uint64
+	inactiveFile uint64
 	anonTHP      uint64
 	shmemTHP     uint64
 	fileTHP      uint64
@@ -77,7 +79,7 @@ func resolveCgroupPath(nsRelative, nsRoot string) string {
 	return filepath.Clean(filepath.Join(nsRoot, nsRelative))
 }
 
-// readMemoryStat reads the five memory metrics from a cgroup v2 memory.stat file.
+// readMemoryStat reads per-VMI memory metrics from a cgroup v2 memory.stat file.
 func readMemoryStat(cgroupRoot, cgroupPath string) (*memoryStat, error) {
 	statPath := filepath.Join(cgroupRoot, cgroupPath, "memory.stat")
 	f, err := os.Open(statPath)
@@ -106,6 +108,8 @@ func readMemoryStat(cgroupRoot, cgroupPath string) (*memoryStat, error) {
 	return &memoryStat{
 		activeAnon:   values["active_anon"],
 		inactiveAnon: values["inactive_anon"],
+		activeFile:   values["active_file"],
+		inactiveFile: values["inactive_file"],
 		anonTHP:      values["anon_thp"],
 		shmemTHP:     values["shmem_thp"],
 		fileTHP:      values["file_thp"],

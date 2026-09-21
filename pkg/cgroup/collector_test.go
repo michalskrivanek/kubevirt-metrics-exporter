@@ -78,6 +78,8 @@ var _ = Describe("readMemoryStat", func() {
 				"file 524288\n"+
 				"active_anon 262144\n"+
 				"inactive_anon 131072\n"+
+				"active_file 98304\n"+
+				"inactive_file 65536\n"+
 				"anon_thp 2097152\n"+
 				"shmem_thp 1048576\n"+
 				"file_thp 524288\n"+
@@ -88,6 +90,8 @@ var _ = Describe("readMemoryStat", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(stat.activeAnon).To(Equal(uint64(262144)))
 		Expect(stat.inactiveAnon).To(Equal(uint64(131072)))
+		Expect(stat.activeFile).To(Equal(uint64(98304)))
+		Expect(stat.inactiveFile).To(Equal(uint64(65536)))
 		Expect(stat.anonTHP).To(Equal(uint64(2097152)))
 		Expect(stat.shmemTHP).To(Equal(uint64(1048576)))
 		Expect(stat.fileTHP).To(Equal(uint64(524288)))
@@ -580,6 +584,8 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 			pod:          "virt-launcher-myvm-abc",
 			activeAnon:   262144,
 			inactiveAnon: 131072,
+			activeFile:   98304,
+			inactiveFile: 65536,
 			anonTHP:      2097152,
 			shmemTHP:     1048576,
 			fileTHP:      524288,
@@ -606,6 +612,18 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 		m = metrics["container_memory_inactive_anon_bytes"]
 		Expect(m).To(HaveLen(1))
 		Expect(m[0].Gauge.GetValue()).To(Equal(float64(131072)))
+
+		By("checking total_active_file")
+		m = metrics["container_memory_total_active_file_bytes"]
+		Expect(m).To(HaveLen(1))
+		Expect(m[0].Gauge.GetValue()).To(Equal(float64(98304)))
+		checkLabels(m[0], wantLabels)
+
+		By("checking total_inactive_file")
+		m = metrics["container_memory_total_inactive_file_bytes"]
+		Expect(m).To(HaveLen(1))
+		Expect(m[0].Gauge.GetValue()).To(Equal(float64(65536)))
+		checkLabels(m[0], wantLabels)
 
 		By("checking anon_thp")
 		m = metrics["container_memory_anon_thp_bytes"]

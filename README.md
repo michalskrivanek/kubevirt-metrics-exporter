@@ -96,12 +96,14 @@ Counters are read from `/sys/kernel/debug/kvm/<pid>-<fd>/` and aggregated across
 
 ### Cgroup metrics
 
-Per-VMI memory metrics (aligned with [CRI-O PR #10143](https://github.com/cri-o/cri-o/pull/10143)):
+Per-VMI memory metrics (aligned with [CRI-O PR #10143](https://github.com/cri-o/cri-o/pull/10143); file-LRU gauges with [CRI-O PR #10368](https://github.com/cri-o/cri-o/pull/10368):
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `container_memory_active_anon_bytes` | gauge | namespace, name, node, pod | Active anonymous memory in bytes |
 | `container_memory_inactive_anon_bytes` | gauge | namespace, name, node, pod | Inactive anonymous memory in bytes |
+| `container_memory_total_active_file_bytes` | gauge | namespace, name, node, pod | Active file (page cache) memory in bytes |
+| `container_memory_total_inactive_file_bytes` | gauge | namespace, name, node, pod | Inactive file (page cache) memory in bytes |
 | `container_memory_anon_thp_bytes` | gauge | namespace, name, node, pod | Anonymous memory backed by transparent hugepages in bytes |
 | `container_memory_shmem_thp_bytes` | gauge | namespace, name, node, pod | Shared memory backed by transparent hugepages in bytes (kernel 6.8+) |
 | `container_memory_file_thp_bytes` | gauge | namespace, name, node, pod | File-backed memory backed by transparent hugepages in bytes |
@@ -126,7 +128,7 @@ Per-node kernel thread and KSM metrics:
 | `kme_cgroup_scrape_errors_total` | counter | | Errors during cgroup poll cycles |
 | `kme_cgroup_last_poll_timestamp_seconds` | gauge | | Unix timestamp of last cgroup poll |
 
-Per-VMI gauges come from cgroup v2 `memory.stat` on each QEMU process. Node buddy, pagetype, zoneinfo, and vmstat THP counters come from host `/proc` (per NUMA node). Buddy/movable metrics use the Movable zone when present (else Normal). The `container_memory_*` naming aligns with the [CRI-O cgroup memory proposal](https://github.com/cri-o/cri-o/pull/10143); `node_ksmd_general_profit_bytes` aligns with [node_exporter PR #3778](https://github.com/prometheus/node_exporter/pull/3778).
+Per-VMI gauges come from cgroup v2 `memory.stat` on each QEMU process. Node buddy, pagetype, zoneinfo, and vmstat THP counters come from host `/proc` (per NUMA node). Buddy/movable metrics use the Movable zone when present (else Normal). The `container_memory_*` naming aligns with [CRI-O PR #10143](https://github.com/cri-o/cri-o/pull/10143) (anon/THP) and [CRI-O PR #10368](https://github.com/cri-o/cri-o/pull/10368) (file LRU); `node_ksmd_general_profit_bytes` aligns with [node_exporter PR #3778](https://github.com/prometheus/node_exporter/pull/3778).
 
 VM resident and domain memory (`kubevirt_vmi_memory_resident_bytes`, `kubevirt_vmi_memory_domain_bytes`) are scraped from virt-handler / KubeVirt, not from this exporter — see the dashboard and [THP and node memory readiness](#thp-and-node-memory-readiness) sections for how those metrics are used alongside KME cgroup and buddy gauges.
 
@@ -321,7 +323,8 @@ Counters are **lifetime** totals; the dashboard shows **recent rate**. Near-zero
 
 - [Transparent Hugepage Support](https://docs.kernel.org/admin-guide/mm/transhuge.html) — THP policies, khugepaged, sysfs and boot parameters.
 - [Memory management documentation index](https://docs.kernel.org/admin-guide/mm/index.html) — broader MM admin topics.
-- [CRI-O cgroup memory metrics proposal](https://github.com/cri-o/cri-o/pull/10143) — alignment of `container_memory_*` naming.
+- [CRI-O cgroup memory metrics proposal](https://github.com/cri-o/cri-o/pull/10143) — alignment of `container_memory_*` anon/THP naming.
+- [CRI-O total active/inactive file memory metrics](https://github.com/cri-o/cri-o/pull/10368) — cAdvisor-parity file-LRU gauges.
 
 ## Configuration
 
