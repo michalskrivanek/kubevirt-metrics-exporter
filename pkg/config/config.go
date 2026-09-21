@@ -15,17 +15,18 @@ import (
 
 type Config struct {
 	// Shared
-	ListenAddress   string
-	TLSCertFile     string
-	TLSKeyFile      string
-	TLSClientCAFile string
-	TLSMinVersion   string
-	TLSCipherSuites string
-	LogLevel        string
-	NodeName        string
-	Namespaces      string
-	Boundaries      []float64
-	BoundariesNs    []int64
+	ListenAddress       string
+	HealthListenAddress string
+	TLSCertFile         string
+	TLSKeyFile          string
+	TLSClientCAFile     string
+	TLSMinVersion       string
+	TLSCipherSuites     string
+	LogLevel            string
+	NodeName            string
+	Namespaces          string
+	Boundaries          []float64
+	BoundariesNs        []int64
 
 	// CRI (shared by QMP and QGA)
 	CRISocket string
@@ -72,6 +73,7 @@ func Parse() *Config {
 
 	// Shared flags
 	flag.StringVar(&c.ListenAddress, "listen-address", envOrDefault("LISTEN_ADDRESS", ":8080"), "Address to listen on for metrics")
+	flag.StringVar(&c.HealthListenAddress, "health-listen-address", envOrDefault("HEALTH_LISTEN_ADDRESS", ""), "Plain HTTP address for health checks (empty disables the separate health endpoint)")
 	flag.StringVar(&c.TLSCertFile, "tls-cert-file", envOrDefault("TLS_CERT_FILE", ""), "TLS serving certificate file (enables HTTPS when set with --tls-key-file)")
 	flag.StringVar(&c.TLSKeyFile, "tls-key-file", envOrDefault("TLS_KEY_FILE", ""), "TLS serving key file (enables HTTPS when set with --tls-cert-file)")
 	flag.StringVar(&c.TLSClientCAFile, "tls-client-ca-file", envOrDefault("TLS_CLIENT_CA_FILE", ""), "PEM CA bundle used to verify metrics client certificates (optional; otherwise OpenShift's authoritative client CA is used)")
