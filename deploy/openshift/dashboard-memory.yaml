@@ -184,7 +184,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'topk($topk, 100 * (sum without (pod) (container_memory_anon_thp_bytes{job="kubevirt-metrics-exporter", node=~"$node", namespace=~"$namespace", name=~"$vmi"}) + sum without (pod) (container_memory_shmem_thp_bytes{job="kubevirt-metrics-exporter", node=~"$node", namespace=~"$namespace", name=~"$vmi"})) / on (namespace, name, node) group_left() (kubevirt_vmi_memory_resident_bytes{node=~"$node", namespace=~"$namespace", name=~"$vmi"} and on (namespace, name, node) kubevirt_vmi_info{phase="running", node=~"$node", namespace=~"$namespace", name=~"$vmi"}))'
+                    query: 'topk($topk, 100 * (sum without (pod) (container_memory_anon_thp_bytes{job="kubevirt-metrics-exporter", node=~"$node", namespace=~"$namespace", name=~"$vmi"}) + sum without (pod) (container_memory_shmem_thp_bytes{job="kubevirt-metrics-exporter", node=~"$node", namespace=~"$namespace", name=~"$vmi"})) / on (namespace, name, node) group_left() max by (namespace, name, node) (kubevirt_vmi_memory_resident_bytes{node=~"$node", namespace=~"$namespace", name=~"$vmi"} and on (namespace, name, node) kubevirt_vmi_info{phase="running", node=~"$node", namespace=~"$namespace", name=~"$vmi"}))'
                     minStep: "30s"
                     seriesNameFormat: "{{name}}"
 
@@ -220,7 +220,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'topk($topk, 100 * (kubevirt_vmi_memory_resident_bytes{node=~"$node", namespace=~"$namespace", name=~"$vmi"} and on (namespace, name, node) kubevirt_vmi_info{phase="running", node=~"$node", namespace=~"$namespace", name=~"$vmi"}) / on (namespace, name, node) group_left() (kubevirt_vmi_memory_domain_bytes{node=~"$node", namespace=~"$namespace", name=~"$vmi"} and on (namespace, name, node) kubevirt_vmi_info{phase="running", node=~"$node", namespace=~"$namespace", name=~"$vmi"}))'
+                    query: 'topk($topk, 100 * max by (namespace, name, node) (kubevirt_vmi_memory_resident_bytes{node=~"$node", namespace=~"$namespace", name=~"$vmi"} and on (namespace, name, node) kubevirt_vmi_info{phase="running", node=~"$node", namespace=~"$namespace", name=~"$vmi"}) / on (namespace, name, node) group_left() max by (namespace, name, node) (kubevirt_vmi_memory_domain_bytes{node=~"$node", namespace=~"$namespace", name=~"$vmi"} and on (namespace, name, node) kubevirt_vmi_info{phase="running", node=~"$node", namespace=~"$namespace", name=~"$vmi"}))'
                     minStep: "30s"
                     seriesNameFormat: "{{name}}"
 
@@ -309,7 +309,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'topk($topk, sum by (node) (node_memory_MemAvailable_bytes{job="node-exporter"} * on (namespace, pod) group_left(node) kube_pod_info{node=~"$node"}))'
+                    query: 'topk($topk, label_replace(node_memory_MemAvailable_bytes{job="node-exporter", instance=~"$node"}, "node", "$1", "instance", "(.*)"))'
                     minStep: "30s"
                     seriesNameFormat: "MemAvailable - node-wide reclaim estimate · {{node}}"
 
