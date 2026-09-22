@@ -254,7 +254,7 @@ The **Kubevirt VM Memory (Dev Preview)** dashboard plots movable-capable buddy l
 | **Movable total** | anchor | `movable_bytes_all_orders` | Same formula, orders 0–10 |
 | **Buddy free total** | buddy free bytes | `buddy_bytes_all_orders` | Sum of all free buddy blocks from `/proc/buddyinfo` |
 | **Non-THP-movable freelist** | anchor | `buddy − movable` | Unmovable + Isolate free buddy in the THP zone only |
-| **MemAvailable** (dashed) | MemAvailable bytes | `node_memory_MemAvailable_bytes` joined to `kube_pod_info` on `(namespace, pod)` | Node-wide reclaim estimate; includes cache and all zones; `node` label from kube-state-metrics |
+| **MemAvailable** (dashed) | MemAvailable bytes | `node_memory_MemAvailable_bytes` via `label_replace(instance→node)` | Node-wide reclaim estimate; includes cache and all zones |
 
 **Node — THP readiness (Kernelcore pool)** — **split-layout hosts only** (populated Movable zone). Empty on fallback hosts; use the Movable zone panel there (Non-THP-movable ≈ unmovable freelist).
 
