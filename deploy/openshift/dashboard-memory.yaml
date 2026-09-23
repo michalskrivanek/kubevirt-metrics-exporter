@@ -9,7 +9,7 @@ spec:
   config:
     display:
       name: Kubevirt VM Memory (Dev Preview)
-      description: THP and resident memory ratios per VM, plus node khugepaged, ksmd, and THP activity
+      description: THP and resident memory ratios per VM, plus node khugepaged, ksmd, KSM profit, and THP activity
     duration: 24h
 
     variables:
@@ -365,19 +365,28 @@ spec:
         kind: Panel
         spec:
           display:
-            name: Node khugepaged & ksmd CPU
+            name: Node khugepaged & ksmd CPU / KSM profit
             description: >-
-              Approximate % of one CPU core per node. khugepaged = THP collapse/scan;
-              ksmd = page merging (separate from THP). Limit ranks nodes by khugepaged
-              + ksmd CPU % and shows both lines for each selected node.
+              Left axis: approximate % of one CPU core. khugepaged = THP collapse/scan;
+              ksmd = page merging (separate from THP). Right axis (dashed): KSM general
+              profit bytes (net memory saved after rmap_item overhead; negative = overhead
+              exceeds savings). Limit ranks nodes by khugepaged + ksmd CPU % and shows
+              CPU + profit for each selected node.
           plugin:
             kind: TimeSeriesChart
             spec:
               yAxis:
                 show: true
+                label: "% of one CPU core"
               legend:
                 position: bottom
                 mode: table
+              querySettings:
+                - queryIndex: 2
+                  format:
+                    shortValues: true
+                    unit: bytes
+                  lineStyle: dashed
           queries:
             - kind: TimeSeriesQuery
               spec:
@@ -401,6 +410,17 @@ spec:
                     query: '100 * rate(kme_cgroup_ksmd_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]) and on (node) topk($topk, 100 * rate(kme_cgroup_khugepaged_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]) + 100 * rate(kme_cgroup_ksmd_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]))'
                     minStep: "30s"
                     seriesNameFormat: "ksmd CPU % ({{node}})"
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+                    query: 'sum by (node) (node_ksmd_general_profit_bytes{job="kubevirt-metrics-exporter"} * on (namespace, pod) group_left(node) max by (namespace, pod, node) (kube_pod_info{node=~"$node"})) and on (node) topk($topk, 100 * rate(kme_cgroup_khugepaged_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]) + 100 * rate(kme_cgroup_ksmd_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]))'
+                    minStep: "30s"
+                    seriesNameFormat: "KSM general profit ({{node}})"
 
       node_thp_activity:
         kind: Panel
