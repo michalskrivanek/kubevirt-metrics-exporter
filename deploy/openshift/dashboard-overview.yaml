@@ -1,0 +1,622 @@
+# Synced from fabiand/perses-dashboards@587367e2ba7d640a801692a395e9d3395121c55c
+# Deviations: PersesDashboard CR wrapper; thanos-querier datasource; stripped
+# unsupported timezone + querySettings[].stack; refreshInterval 1m (upstream 15s);
+# overview drilldowns use /monitoring/v2/dashboards/view?dashboard=...&project=kubevirt-metrics-exporter
+apiVersion: perses.dev/v1alpha2
+kind: PersesDashboard
+metadata:
+  name: overview
+  namespace: kubevirt-metrics-exporter
+  labels:
+    app: kubevirt-metrics-exporter
+spec:
+  config:
+    display:
+      name: Overview
+    duration: 1h
+    refreshInterval: 1m
+    panels:
+      memory_utilization:
+        kind: Panel
+        spec:
+          display:
+            name: Memory - Utilization
+            description: |-
+              Aggregated physical memory utilization across all cluster nodes as a percentage of allocatable memory. Threshold: <70% green (healthy), 80-90% yellow (monitor), >90% red (critical).
+
+              Answers: What is the overall cluster memory utilization?
+          links:
+            - name: View Memory Dashboard
+              tooltip: Drill down to Memory dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=memory&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                decimalPlaces: 0
+                unit: percent-decimal
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - color: '#FFB249'
+                    value: 0.7
+                  - color: '#EE6C6C'
+                    value: 0.85
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: sum(openshift:node:memory:bytes{tier="0", scope="workloads", utilized="true"}) / sum(kube_node_status_allocatable{resource="memory"})
+                    seriesNameFormat: Memory utilization
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      memory_pressure:
+        kind: Panel
+        spec:
+          display:
+            name: Memory - Pressure (PSI) - max
+            description: |-
+              Maximum Memory Pressure Stall Information (PSI) across all nodes. Shows the fraction of time tasks are waiting for memory to complete. Threshold: >10% moderate, >30% severe.
+
+              Answers: What is the maximum memory pressure across nodes?
+          links:
+            - name: View Memory Dashboard
+              tooltip: Drill down to Memory dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=memory&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                decimalPlaces: 0
+                unit: percent-decimal
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.1
+                    color: '#FFB249'
+                  - value: 0.3
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: max(openshift:node:memory:pressure:ratio{severity="some"} @ end())
+                    seriesNameFormat: Max memory pressure
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      memory_imbalance:
+        kind: Panel
+        spec:
+          display:
+            name: Memory - Pressure Imbalance
+            description: |-
+              80th percentile of percentage point distance from mean memory pressure. Shows the spread: 80% of nodes are within this many percentage points of the mean. Threshold: <11% green (healthy balanced), 11-22% yellow (unhealthy balance), 22-33% orange (severely unbalanced), >33% red (critically unbalanced).
+
+              Answers: Within what percentage point band are 80% of nodes?
+          links:
+            - name: View Memory Dashboard
+              tooltip: Drill down to Memory dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=memory&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                decimalPlaces: 0
+                unit: percent-decimal
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.11
+                    color: '#FFB249'
+                  - value: 0.22
+                    color: '#FF9F1C'
+                  - value: 0.33
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: openshift:cluster:memory:imbalance:p80distance{scope="workloads"}
+                    seriesNameFormat: p80 distance from mean
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      memory_virtual_commitment:
+        kind: Panel
+        spec:
+          display:
+            name: Memory - Virtual Commitment
+            description: |-
+              Total committed virtual memory as a percentage of allocatable physical memory. Threshold: <150% green (acceptable), 150-175% yellow (monitor VM usage), >175% red (high overcommitment risk).
+
+              Answers: Is the cluster overcommitting virtual memory?
+          links:
+            - name: View Memory Dashboard
+              tooltip: Drill down to Memory dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=memory&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                decimalPlaces: 0
+                unit: percent-decimal
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 1.5
+                    color: '#FFB249'
+                  - value: 1.75
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: sum(openshift:vm:virtual:memory:bytes) / sum(kube_node_status_allocatable{resource="memory"})
+                    seriesNameFormat: Virtual memory commitment
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      cpu_utilization:
+        kind: Panel
+        spec:
+          display:
+            name: CPU - Utilization
+            description: |-
+              Percentage of cluster CPU capacity currently in use by workloads. Threshold: <70% green (healthy capacity), 70-85% yellow (monitor usage), >85% red (high utilization).
+
+              Answers: How much of the cluster's CPU is being used?
+          links:
+            - name: View CPU Dashboard
+              tooltip: Drill down to CPU dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=cpu&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                unit: percent-decimal
+                decimalPlaces: 0
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.7
+                    color: '#FFB249'
+                  - value: 0.85
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: openshift:cluster:cpu:utilization:ratio{scope="workloads"}
+                    seriesNameFormat: CPU utilization
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      cpu_pressure:
+        kind: Panel
+        spec:
+          display:
+            name: CPU - Pressure (PSI) - max
+            description: |-
+              Maximum CPU Pressure Stall Information (PSI) across all nodes. Shows the fraction of time tasks are waiting for CPU. Threshold: <10% green (healthy), 10-30% yellow (moderate pressure), >30% red (high contention).
+
+              Answers: What is the worst-case CPU pressure in the cluster?
+          links:
+            - name: View CPU Dashboard
+              tooltip: Drill down to CPU dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=cpu&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                unit: percent-decimal
+                decimalPlaces: 0
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.1
+                    color: '#FFB249'
+                  - value: 0.3
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: max(openshift:node:cpu:pressure:ratio{severity="some"} @ end())
+                    seriesNameFormat: Max CPU pressure
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      cpu_imbalance:
+        kind: Panel
+        spec:
+          display:
+            name: CPU - Pressure Imbalance
+            description: |-
+              80th percentile of percentage point distance from mean CPU pressure. Shows the spread: 80% of nodes are within this many percentage points of the mean. Threshold: <11% green (healthy balanced), 11-22% yellow (unhealthy balance), 22-33% orange (severely unbalanced), >33% red (critically unbalanced).
+
+              Answers: Within what percentage point band are 80% of nodes?
+          links:
+            - name: View CPU Dashboard
+              tooltip: Drill down to CPU dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=cpu&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                unit: percent-decimal
+                decimalPlaces: 0
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.11
+                    color: '#FFB249'
+                  - value: 0.22
+                    color: '#FF9F1C'
+                  - value: 0.33
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: openshift:cluster:cpu:imbalance:p80distance{scope="workloads"}
+                    seriesNameFormat: p80 distance from mean
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      cpu_virtual_commitment:
+        kind: Panel
+        spec:
+          display:
+            name: CPU - Virtual Commitment
+            description: |-
+              Total virtual CPUs assigned to VMs as a percentage of physical CPU capacity. Threshold: <150% green (acceptable), 150-175% yellow (monitor VM usage), >175% red (high overcommit risk).
+
+              Answers: Is the cluster overcommitting virtual CPUs?
+          links:
+            - name: View CPU Dashboard
+              tooltip: Drill down to CPU dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=cpu&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                unit: percent-decimal
+                decimalPlaces: 0
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 1.5
+                    color: '#FFB249'
+                  - value: 1.75
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: openshift:cluster:cpu:overcommit:ratio{scope="virtual"}
+                    seriesNameFormat: vCPU overcommit
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      io_utilization:
+        kind: Panel
+        spec:
+          display:
+            name: I/O - Utilization
+            description: |-
+              Cluster-wide storage device busy time as a percentage. Shows the fraction of wall-clock time when at least one I/O request was in flight. Threshold: <70% green (healthy capacity), 70-85% yellow (monitor usage), >85% red (high utilization).
+
+              Answers: How busy are the storage devices?
+          links:
+            - name: View I/O Dashboard
+              tooltip: Drill down to I/O dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=io&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                unit: percent-decimal
+                decimalPlaces: 0
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.7
+                    color: '#FFB249'
+                  - value: 0.85
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: openshift:cluster:io:utilization:ratio
+                    seriesNameFormat: Device busy time
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      io_pressure:
+        kind: Panel
+        spec:
+          display:
+            name: I/O - Pressure (PSI) - max
+            description: |-
+              Maximum I/O Pressure Stall Information (PSI) across all nodes. Shows the fraction of time tasks are waiting for I/O to complete. Threshold: >10% moderate, >30% severe.
+
+              Answers: How much time are tasks waiting for I/O?
+          links:
+            - name: View I/O Dashboard
+              tooltip: Drill down to I/O dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=io&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                unit: percent-decimal
+                decimalPlaces: 0
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.1
+                    color: '#FFB249'
+                  - value: 0.3
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: max(openshift:node:io:pressure:ratio{severity="some"} @ end())
+                    seriesNameFormat: Max IO pressure
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      io_imbalance:
+        kind: Panel
+        spec:
+          display:
+            name: I/O - Pressure Imbalance
+            description: |-
+              80th percentile of percentage point distance from mean I/O pressure. Shows the spread: 80% of nodes are within this many percentage points of the mean. Threshold: <11% green (healthy balanced), 11-22% yellow (unhealthy balance), 22-33% orange (severely unbalanced), >33% red (critically unbalanced).
+
+              Answers: Within what percentage point band are 80% of nodes?
+          links:
+            - name: View I/O Dashboard
+              tooltip: Drill down to I/O dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=io&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                unit: percent-decimal
+                decimalPlaces: 0
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.11
+                    color: '#FFB249'
+                  - value: 0.22
+                    color: '#FF9F1C'
+                  - value: 0.33
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: openshift:cluster:io:imbalance:p80distance
+                    seriesNameFormat: p80 distance from mean
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+      io_latency:
+        kind: Panel
+        spec:
+          display:
+            name: I/O - Latency (p95)
+            description: |-
+              Storage I/O p95 latency percentile. 95% of operations complete within this time. Threshold: <30ms green, 30-60ms yellow, >60ms red.
+
+              Answers: What is the current storage p95 latency?
+          links:
+            - name: View I/O Dashboard
+              tooltip: Drill down to I/O dashboard
+              targetBlank: false
+              url: /monitoring/v2/dashboards/view?dashboard=io&project=kubevirt-metrics-exporter
+          plugin:
+            kind: StatChart
+            spec:
+              calculation: last-number
+              sparkline:
+                color: blue-grey
+              format:
+                unit: seconds
+                decimalPlaces: 0
+              thresholds:
+                steps:
+                  - value: 0
+                    color: '#59CC8D'
+                  - value: 0.03
+                    color: '#FFB249'
+                  - value: 0.06
+                    color: '#EE6C6C'
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: openshift:cluster:io:latency:p95
+                    seriesNameFormat: p95 latency
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+    layouts:
+      - kind: Grid
+        spec:
+          display:
+            title: Memory
+            collapse:
+              open: true
+          items:
+            - x: 0
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/memory_utilization'
+            - x: 6
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/memory_pressure'
+            - x: 12
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/memory_imbalance'
+            - x: 18
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/memory_virtual_commitment'
+      - kind: Grid
+        spec:
+          display:
+            title: CPU
+            collapse:
+              open: true
+          items:
+            - x: 0
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/cpu_utilization'
+            - x: 6
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/cpu_pressure'
+            - x: 12
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/cpu_imbalance'
+            - x: 18
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/cpu_virtual_commitment'
+      - kind: Grid
+        spec:
+          display:
+            title: I/O
+            collapse:
+              open: true
+          items:
+            - x: 0
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/io_utilization'
+            - x: 6
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/io_pressure'
+            - x: 12
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/io_imbalance'
+            - x: 18
+              y: 0
+              width: 6
+              height: 6
+              content:
+                $ref: '#/spec/panels/io_latency'
