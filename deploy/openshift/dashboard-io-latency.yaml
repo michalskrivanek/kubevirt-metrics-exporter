@@ -1,14 +1,14 @@
 apiVersion: perses.dev/v1alpha2
 kind: PersesDashboard
 metadata:
-  name: kubevirt-metrics-exporter
+  name: io-latency
   namespace: kubevirt-metrics-exporter
   labels:
     app: kubevirt-metrics-exporter
 spec:
   config:
     display:
-      name: KubeVirt Storage Latency
+      name: KubeVirt Storage Latency Details (Dev Preview)
       description: Storage I/O latency from QMP and eBPF subsystems
     duration: 1h
 

@@ -159,7 +159,7 @@ See [`docs/example-queries.md`](docs/example-queries.md) for a full per-metric q
 
 ## THP and node memory readiness
 
-This section explains the **Kubevirt VM Memory (Dev Preview)** Perses dashboard (`deploy/openshift/dashboard-memory.yaml`) and the KME node memory metrics it uses.
+This section explains the **KubeVirt VM Memory Details (Dev Preview)** Perses dashboard (`deploy/openshift/dashboard-memory-detailed.yaml`) and the KME node memory metrics it uses.
 
 ### Three layers (do not mix them)
 
@@ -233,7 +233,7 @@ Exported gauges:
 - **`unmovable_bytes_order_ge_9`** — free Unmovable blocks at order ≥ 9 (2 MiB+). This is the portion of **THP-sized** free buddy that cannot be used for collapse. It is required internally to compute `movable_bytes_order_ge_9` and is useful for alerts/debugging (“how much 2 MiB-class free stock is pinned unmovable?”).
 - **`unmovable_bytes_all_orders`** — all free Unmovable blocks (orders 0–10). Most unmovable free memory usually sits in **small** orders; this line shows total pinned freelist footprint but does **not** substitute for ge9 when assessing immediate THP readiness.
 
-The **Kubevirt VM Memory (Dev Preview)** dashboard plots movable-capable buddy lines plus **Non-THP-movable** (`buddy − movable` in the THP zone). It does not plot `unmovable_bytes_all_orders` or `unmovable_bytes_order_ge_9` directly; the ge9 gap `buddy_ge9 − movable_ge9` already reflects unmovable (and reclaimable) stock at 2 MiB orders.
+The **KubeVirt VM Memory Details (Dev Preview)** dashboard plots movable-capable buddy lines plus **Non-THP-movable** (`buddy − movable` in the THP zone). It does not plot `unmovable_bytes_all_orders` or `unmovable_bytes_order_ge_9` directly; the ge9 gap `buddy_ge9 − movable_ge9` already reflects unmovable (and reclaimable) stock at 2 MiB orders.
 
 ### Dashboard panels
 
@@ -393,11 +393,28 @@ Shared flags apply to all subsystems. QMP-specific flags are prefixed with `--qm
 | `--enable-cgroup` | `ENABLE_CGROUP` | `true` | Enable cgroup v2 memory and kernel thread collection |
 | `--cgroup-poll-interval` | `CGROUP_POLL_INTERVAL` | `30s` | Poll interval for cgroup stats |
 
-## Alerting
+## Dashboards (OpenShift)
 
-Prometheus alerting rules are included in `deploy/prometheus-rules/` and deployed automatically with `make deploy` / `make deploy-kubernetes`.
+OpenShift deploy includes Perses dashboards (`deploy/openshift/dashboard-*.yaml`) and a Thanos Querier datasource:
 
-The rules cover two areas:
+| Dashboard | File | Purpose |
+|-----------|------|---------|
+| Overview | `dashboard-overview.yaml` | Cluster glance: memory / CPU / I/O utilization, pressure, imbalance |
+| CPU | `dashboard-cpu.yaml` | Cluster and node CPU capacity, utilization, overcommit |
+| I/O | `dashboard-io.yaml` | Device utilization, pressure, and host-to-device latency |
+| Memory | `dashboard-memory.yaml` | Cluster/node memory utilization, pressure, virtual commitment |
+| KubeVirt Storage Latency Details (Dev Preview) | `dashboard-io-latency.yaml` | Per-VMI storage path deep-dive (QMP, eBPF, QGA, virtqueues) |
+| KubeVirt VM Memory Details (Dev Preview) | `dashboard-memory-detailed.yaml` | Per-VMI THP/resident ratios, KSM, and node THP readiness |
+
+Overview / CPU / I/O / Memory panels query `openshift:*` recording rules (see below). The storage and THP dashboards query exporter metrics directly.
+
+## Alerting and recording rules
+
+Prometheus rules are included in `deploy/prometheus-rules/` and deployed automatically with `make deploy` / `make deploy-kubernetes`.
+
+### Alerting
+
+The alerting rules cover two areas:
 
 **Workload health** — alerts on high storage I/O latency (hypervisor-side, guest-side, and node-side) and virtqueue saturation:
 
@@ -430,6 +447,18 @@ The rules cover two areas:
 The `KMEAbsent` alert uses the Prometheus `up` metric with `job="kubevirt-metrics-exporter"`. If your PodMonitor uses a different job name, update the alert expression to match.
 
 QMP histogram latency values reported in alert annotations are approximate due to the default histogram bucket granularity (10ms, 100ms, 1s). For higher precision, configure finer-grained boundaries via `--boundaries`.
+
+### Recording rules
+
+Cluster glance dashboards depend on recording rules in `deploy/prometheus-rules/recording/`:
+
+| File | Series prefix | Notes |
+|------|---------------|-------|
+| `cpu.yaml` | `openshift:node:cpu:*`, `openshift:cluster:cpu:*`, `openshift:vm:cpu:*` | Uses kube-state-metrics, cAdvisor, KubeVirt vCPU metrics |
+| `io.yaml` | `openshift:node:io:*`, `openshift:cluster:io:*` | Utilization from node_exporter; latency from `kme_system_block_io_latency_seconds_*` |
+| `memory.yaml` | `openshift:node:memory:*`, `openshift:cluster:memory:*`, `openshift:vm:memory:*` | Uses node_exporter, cAdvisor, kube-state-metrics, KubeVirt memory metrics |
+
+These are separate from the alerting `PrometheusRule` and use the same namespace/labels as the existing KME alerts.
 
 ## Exporting historical KME metrics
 
@@ -521,7 +550,7 @@ To deploy with a custom image:
 make deploy IMAGE=quay.io/myuser/kubevirt-metrics-exporter TAG=v0.1.0
 ```
 
-The OpenShift variant includes SecurityContextConstraints, worker node selector, and PodMonitor for Prometheus scraping.
+The OpenShift variant includes SecurityContextConstraints, worker node selector, ServiceMonitor for Prometheus scraping, Perses dashboards/datasource, and Prometheus alerting plus recording rules.
 
 ### Required capabilities
 
