@@ -6,6 +6,7 @@ package qmp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -20,6 +21,10 @@ const (
 	qmpFlag               = 0
 	defaultConnectTimeout = 5 * time.Second
 )
+
+// ErrClientClosed is returned when an operation is attempted on a closed Client.
+// A closed client must not be reused; callers should reconnect.
+var ErrClientClosed = errors.New("qmp client is closed")
 
 type qmpCommand struct {
 	Execute   string `json:"execute"`
@@ -43,6 +48,12 @@ type Client struct {
 	closed    atomic.Bool
 	closeOnce sync.Once
 	closeErr  error
+}
+
+// ClientForTest wraps an existing connection without a libvirt handshake.
+// Intended for cross-package tests of Close/Closed and collector recovery.
+func ClientForTest(conn net.Conn) *Client {
+	return &Client{conn: conn}
 }
 
 // Dial connects to a domain with a bounded connection setup time.
@@ -94,6 +105,11 @@ func (c *Client) Close() error {
 	return c.closeErr
 }
 
+// Closed reports whether Close has been called (including via context cancellation).
+func (c *Client) Closed() bool {
+	return c.closed.Load()
+}
+
 // call closes the transport on cancellation. Socket deadlines alone do not
 // interrupt go-libvirt RPCs: its reader retries timeout errors while the caller
 // remains blocked waiting for a response.
@@ -104,7 +120,7 @@ func (c *Client) call(ctx context.Context, fn func() error) error {
 		return err
 	}
 	if c.closed.Load() {
-		return fmt.Errorf("client is closed")
+		return ErrClientClosed
 	}
 
 	done := make(chan struct{})

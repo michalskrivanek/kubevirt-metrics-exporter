@@ -528,7 +528,7 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 			err := conn.client.EnableHistogram(armCtx, deviceID, c.cfg.BoundariesNs)
 			armCancel()
 			if err != nil {
-				if conn.client.closed.Load() {
+				if conn.client.Closed() {
 					return nil, err
 				}
 				c.log.Warn("qmp: failed to arm histogram", "vmi", conn.vmi, "device_id", deviceID, "error", err)
@@ -571,7 +571,7 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 	virtioDevices, err := conn.client.QueryVirtio(listCtx)
 	listCancel()
 	if err != nil {
-		if conn.client.closed.Load() {
+		if conn.client.Closed() {
 			return nil, err
 		}
 		c.log.Warn("qmp: x-query-virtio not available, skipping virtqueue metrics", "vmi", conn.vmi, "error", err)
@@ -591,7 +591,7 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 				vs, err := conn.client.QueryVirtioStatus(statusCtx, vdev.Path)
 				statusCancel()
 				if err != nil {
-					if conn.client.closed.Load() {
+					if conn.client.Closed() {
 						return nil, err
 					}
 					c.log.Warn("qmp: failed to query virtio status", "vmi", conn.vmi, "path", vdev.Path, "error", err)
@@ -608,7 +608,7 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 				qs, err := conn.client.QueryVirtioQueueStatus(qsCtx, vdev.Path, qi)
 				qsCancel()
 				if err != nil {
-					if conn.client.closed.Load() {
+					if conn.client.Closed() {
 						return nil, err
 					}
 					c.log.Warn("qmp: failed to query virtqueue status", "vmi", conn.vmi, "path", vdev.Path, "queue", qi, "error", err)
@@ -640,7 +640,7 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 				vs, err := conn.client.QueryVirtioStatus(statusCtx, vdev.Path)
 				statusCancel()
 				if err != nil {
-					if conn.client.closed.Load() {
+					if conn.client.Closed() {
 						return nil, err
 					}
 					c.log.Warn("qmp: failed to query virtio-scsi status", "vmi", conn.vmi, "path", vdev.Path, "error", err)
@@ -657,7 +657,7 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 				qs, err := conn.client.QueryVirtioQueueStatus(qsCtx, vdev.Path, qi)
 				qsCancel()
 				if err != nil {
-					if conn.client.closed.Load() {
+					if conn.client.Closed() {
 						return nil, err
 					}
 					c.log.Warn("qmp: failed to query virtio-scsi queue status", "vmi", conn.vmi, "path", vdev.Path, "queue", qi, "error", err)
