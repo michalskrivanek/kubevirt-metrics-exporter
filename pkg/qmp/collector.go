@@ -118,10 +118,14 @@ func (vc *vmConnection) close() {
 	}
 }
 
+type computePIDFinder interface {
+	FindComputePID(context.Context, string, string) (*cri.ContainerInfo, error)
+}
+
 type Collector struct {
 	cfg       PollerConfig
 	podStore  cache.Store
-	criClient *cri.Client
+	criClient computePIDFinder
 	dynClient dynamic.Interface
 	log       *slog.Logger
 
@@ -427,7 +431,9 @@ func (c *Collector) connectVM(ctx context.Context, ns, vmi, podName string, pid 
 	}
 
 	domainName := ns + "_" + vmi
-	client, err := Dial(sockPath, domainName)
+	connectCtx, cancel := context.WithTimeout(ctx, c.cfg.QMPTimeout)
+	defer cancel()
+	client, err := DialContext(connectCtx, sockPath, domainName)
 	if err != nil {
 		return nil, fmt.Errorf("dialing QMP for %s: %w", domainName, err)
 	}
@@ -452,6 +458,8 @@ func FetchPVCMap(ctx context.Context, dynClient dynamic.Interface, ns, vmiName s
 		return pvcMap
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, defaultConnectTimeout)
+	defer cancel()
 	obj, err := dynClient.Resource(vmiResource).Namespace(ns).Get(ctx, vmiName, metav1.GetOptions{})
 	if err != nil {
 		log.Warn("failed to fetch VMI for PVC mapping", "vmi", vmiName, "error", err)
@@ -520,6 +528,9 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 			err := conn.client.EnableHistogram(armCtx, deviceID, c.cfg.BoundariesNs)
 			armCancel()
 			if err != nil {
+				if conn.client.closed.Load() {
+					return nil, err
+				}
 				c.log.Warn("qmp: failed to arm histogram", "vmi", conn.vmi, "device_id", deviceID, "error", err)
 				continue
 			}
@@ -560,6 +571,9 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 	virtioDevices, err := conn.client.QueryVirtio(listCtx)
 	listCancel()
 	if err != nil {
+		if conn.client.closed.Load() {
+			return nil, err
+		}
 		c.log.Warn("qmp: x-query-virtio not available, skipping virtqueue metrics", "vmi", conn.vmi, "error", err)
 	} else {
 		for _, vdev := range virtioDevices {
@@ -577,6 +591,9 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 				vs, err := conn.client.QueryVirtioStatus(statusCtx, vdev.Path)
 				statusCancel()
 				if err != nil {
+					if conn.client.closed.Load() {
+						return nil, err
+					}
 					c.log.Warn("qmp: failed to query virtio status", "vmi", conn.vmi, "path", vdev.Path, "error", err)
 					continue
 				}
@@ -591,6 +608,9 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 				qs, err := conn.client.QueryVirtioQueueStatus(qsCtx, vdev.Path, qi)
 				qsCancel()
 				if err != nil {
+					if conn.client.closed.Load() {
+						return nil, err
+					}
 					c.log.Warn("qmp: failed to query virtqueue status", "vmi", conn.vmi, "path", vdev.Path, "queue", qi, "error", err)
 					continue
 				}
@@ -620,6 +640,9 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 				vs, err := conn.client.QueryVirtioStatus(statusCtx, vdev.Path)
 				statusCancel()
 				if err != nil {
+					if conn.client.closed.Load() {
+						return nil, err
+					}
 					c.log.Warn("qmp: failed to query virtio-scsi status", "vmi", conn.vmi, "path", vdev.Path, "error", err)
 					continue
 				}
@@ -634,6 +657,9 @@ func (c *Collector) scrapeVM(ctx context.Context, conn *vmConnection) (*VMIResul
 				qs, err := conn.client.QueryVirtioQueueStatus(qsCtx, vdev.Path, qi)
 				qsCancel()
 				if err != nil {
+					if conn.client.closed.Load() {
+						return nil, err
+					}
 					c.log.Warn("qmp: failed to query virtio-scsi queue status", "vmi", conn.vmi, "path", vdev.Path, "queue", qi, "error", err)
 					continue
 				}
