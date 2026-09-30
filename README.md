@@ -237,7 +237,7 @@ The **Kubevirt VM Memory (Dev Preview)** dashboard plots movable-capable buddy l
 
 ### Dashboard panels
 
-**Limit** (`$topk`, default 5) — caps most panels to the top *N* series by **instant value** (Prometheus `topk`). Not used on the Kernelcore pool panel. Multi-line panels share an anchor so related series stay aligned: buddy free total for Movable zone node·NUMA pairs; metric sum per node for khugepaged/ksmd and split/collapse (see table).
+**Limit** (`$topk`, default 5) — caps most panels to the top *N* series by **instant value** (Prometheus `topk`). Not used on the Kernelcore pool panel. Multi-line panels share an anchor so related series stay aligned: buddy free total for Movable zone node·NUMA pairs; metric sum per node for khugepaged/ksmd/KSM-profit and split/collapse (see table).
 
 **VM Memory** — scoped by `node` (pick one node for per-VM detail). Cgroup THP metrics use `sum without (pod)` so `node` stays on the series for the virt-handler join. Resident and domain metrics are filtered with `kubevirt_vmi_info{phase="running"}` (includes paused VMs; excludes stopped/transitional/stale post-migration series).
 
@@ -254,7 +254,7 @@ The **Kubevirt VM Memory (Dev Preview)** dashboard plots movable-capable buddy l
 | **Movable total** | anchor | `movable_bytes_all_orders` | Same formula, orders 0–10 |
 | **Buddy free total** | buddy free bytes | `buddy_bytes_all_orders` | Sum of all free buddy blocks from `/proc/buddyinfo` |
 | **Non-THP-movable freelist** | anchor | `buddy − movable` | Unmovable + Isolate free buddy in the THP zone only |
-| **MemAvailable** (dashed) | MemAvailable bytes | `node_memory_MemAvailable_bytes` joined to `kube_pod_info` on `(namespace, pod)` | Node-wide reclaim estimate; includes cache and all zones; `node` label from kube-state-metrics |
+| **MemAvailable** (dashed) | MemAvailable bytes | `node_memory_MemAvailable_bytes` via `label_replace(instance→node)` | Node-wide reclaim estimate; includes cache and all zones |
 
 **Node — THP readiness (Kernelcore pool)** — **split-layout hosts only** (populated Movable zone). Empty on fallback hosts; use the Movable zone panel there (Non-THP-movable ≈ unmovable freelist).
 
@@ -265,17 +265,19 @@ The **Kubevirt VM Memory (Dev Preview)** dashboard plots movable-capable buddy l
 
 Gate: hidden dashboard variable `kernelcore_zoneinfo_gate` (`movable_present` \| `always`). To drop the gate once all nodes use split layout: set `always`, then remove the variable and trailing ` $kernelcore_zoneinfo_gate` from the two zoneinfo queries.
 
-**Node — khugepaged & ksmd CPU** — both lines share the same top **nodes** (anchor: `khugepaged CPU % + ksmd CPU %` per node).
+**Node — khugepaged & ksmd CPU / KSM profit** — CPU lines and profit share the same top **nodes** (anchor: `khugepaged CPU % + ksmd CPU %` per node). Dual Y-axis: left = CPU %, right = profit bytes (dashed).
 
-| Line | Limit sort |
-|------|------------|
-| **khugepaged CPU %** | sum anchor (per node) |
-| **ksmd CPU %** | sum anchor (per node) |
+| Line | Limit sort | Axis |
+|------|------------|------|
+| **khugepaged CPU %** | sum anchor (per node) | left |
+| **ksmd CPU %** | sum anchor (per node) | left |
+| **KSM general profit** | sum anchor (per node) | right (bytes) |
 
 `100 × rate(cpu_seconds_total[interval])` → approximate **% of one CPU core**.
 
 - **khugepaged** — THP collapse / scanning activity. Bursts are normal when memory is being collapsed; sustained high rates under load warrant checking split vs collapse counters.
 - **ksmd** — Kernel Samepage Merging (separate from THP). High ksmd CPU means active page merging; it competes for CPU but is not the same mechanism as THP.
+- **KSM general profit** — `node_ksmd_general_profit_bytes` (node_exporter-aligned, no metric `node` label). Net memory saved after rmap_item overhead; negative → overhead exceeds savings. Joined via `max by (namespace, pod, node) (kube_pod_info)`.
 
 **Node — THP split & collapse** — both lines share the same top **nodes** (anchor: `split_pmd/min + collapse_alloc/min` per node).
 
