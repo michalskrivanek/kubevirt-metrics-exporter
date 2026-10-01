@@ -418,7 +418,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'sum by (node) (node_ksmd_general_profit_bytes{job="kubevirt-metrics-exporter"} * on (namespace, pod) group_left(node) max by (namespace, pod, node) (kube_pod_info{node=~"$node"})) and on (node) topk($topk, 100 * rate(kme_cgroup_khugepaged_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]) + 100 * rate(kme_cgroup_ksmd_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]))'
+                    query: 'sum by (node) (node_ksmd_general_profit_bytes{job="kubevirt-metrics-exporter", node=~"$node"}) and on (node) topk($topk, 100 * rate(kme_cgroup_khugepaged_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]) + 100 * rate(kme_cgroup_ksmd_cpu_seconds_total{job="kubevirt-metrics-exporter", node=~"$node"}[$interval]))'
                     minStep: "30s"
                     seriesNameFormat: "KSM general profit ({{node}})"
 
