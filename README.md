@@ -112,7 +112,7 @@ Per-node kernel thread and KSM metrics:
 |--------|------|--------|-------------|
 | `kme_cgroup_khugepaged_cpu_seconds_total` | counter | node | Cumulative CPU time consumed by the khugepaged kernel thread |
 | `kme_cgroup_ksmd_cpu_seconds_total` | counter | node | Cumulative CPU time consumed by the ksmd kernel thread |
-| `node_ksmd_general_profit_bytes` | gauge | | Net memory saved by KSM after subtracting tracking overhead (aligned with [node_exporter PR #3778](https://github.com/prometheus/node_exporter/pull/3778)) |
+| `node_ksmd_general_profit_bytes` | gauge | node | Net memory saved by KSM after subtracting tracking overhead (aligned with [node_exporter PR #3778](https://github.com/prometheus/node_exporter/pull/3778)) |
 | `kme_node_thp_split_pmd_total` | counter | node | THP page table downgrades (`thp_split_pmd` from `/proc/vmstat`) |
 | `kme_node_thp_collapse_alloc_total` | counter | node | Successful THP collapses by khugepaged (`thp_collapse_alloc` from `/proc/vmstat`) |
 | `kme_node_movable_bytes_order_ge_9` | gauge | node, numa | Movable-capable free buddy memory at page order ≥9 in bytes (Movable zone if present, else Normal; buddy minus Unmovable and Isolate) |
@@ -277,7 +277,7 @@ Gate: hidden dashboard variable `kernelcore_zoneinfo_gate` (`movable_present` \|
 
 - **khugepaged** — THP collapse / scanning activity. Bursts are normal when memory is being collapsed; sustained high rates under load warrant checking split vs collapse counters.
 - **ksmd** — Kernel Samepage Merging (separate from THP). High ksmd CPU means active page merging; it competes for CPU but is not the same mechanism as THP.
-- **KSM general profit** — `node_ksmd_general_profit_bytes` (node_exporter-aligned, no metric `node` label). Net memory saved after rmap_item overhead; negative → overhead exceeds savings. Joined via `max by (namespace, pod, node) (kube_pod_info)`.
+- **KSM general profit** — `node_ksmd_general_profit_bytes` (node_exporter-aligned, with `node` label). Net memory saved after rmap_item overhead; negative → overhead exceeds savings.
 
 **Node — THP split & collapse** — both lines share the same top **nodes** (anchor: `split_pmd/min + collapse_alloc/min` per node).
 
