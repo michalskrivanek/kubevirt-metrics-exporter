@@ -6,3 +6,6 @@ resources:
   - clusterrole.yaml
   - clusterrolebinding.yaml
   - daemonset.yaml
+  - network-policy-default-deny.yaml
+  - network-policy-api-server.yaml
+  - network-policy-metrics.yaml

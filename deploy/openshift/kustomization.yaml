@@ -12,6 +12,15 @@ resources:
 - metrics-service.yaml
 - metrics-servicemonitor.yaml
 patches:
+- patch: |-
+    - op: replace
+      path: /spec/ingress/0/ports/0/port
+      value: 8443
+  target:
+    group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    name: kubevirt-metrics-exporter-allow-metrics
 - patch: |
     apiVersion: apps/v1
     kind: DaemonSet
