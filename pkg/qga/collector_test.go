@@ -123,9 +123,10 @@ var _ = Describe("QGA scrape recovery", func() {
 		Expect(vs.closed).To(BeTrue())
 	})
 
-	It("drops after MaxRetries instead of permanently stopping soft errors", func() {
+	It("drops after MaxRetries when the VM previously scraped successfully", func() {
 		c := testCollector(2)
 		vs := addVM(c, "vm", pipeClient())
+		vs.everSucceeded = true
 		soft := errors.New("powershell exited with code 1")
 		c.handleScrapeError("vm", vs, soft)
 		Expect(c.vms).To(HaveKey("vm"))
@@ -133,6 +134,20 @@ var _ = Describe("QGA scrape recovery", func() {
 		Expect(c.vms).NotTo(HaveKey("vm"))
 		Expect(vs.stopped).To(BeFalse())
 		Expect(vs.closed).To(BeTrue())
+	})
+
+	It("permanently stops after MaxRetries when the VM never scraped successfully", func() {
+		c := testCollector(2)
+		vs := addVM(c, "vm", pipeClient())
+		soft := errors.New("guest-exec: Guest agent is not responding")
+		c.handleScrapeError("vm", vs, soft)
+		Expect(c.vms).To(HaveKey("vm"))
+		Expect(vs.stopped).To(BeFalse())
+		c.handleScrapeError("vm", vs, soft)
+		Expect(c.vms).To(HaveKey("vm"))
+		Expect(vs.stopped).To(BeTrue())
+		Expect(vs.closed).To(BeFalse())
+		Expect(vs.stopReason).To(ContainSubstring("no prior success"))
 	})
 
 	It("keeps blacklisted VMs stopped without deleting the entry", func() {

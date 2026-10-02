@@ -34,18 +34,19 @@ type CollectorConfig struct {
 }
 
 type vmState struct {
-	mu           sync.Mutex
-	client       *qmp.Client
-	namespace    string
-	vmi          string
-	podName      string
-	prevSnapshot map[string]DiskCounters
-	pvcMap       map[string]string // volume name -> PVC claim name
-	diskMap      map[int]string    // PhysicalDrive index -> volume name
-	retryCount   int
-	stopped      bool
-	stopReason   string
-	closed       bool
+	mu            sync.Mutex
+	client        *qmp.Client
+	namespace     string
+	vmi           string
+	podName       string
+	prevSnapshot  map[string]DiskCounters
+	pvcMap        map[string]string // volume name -> PVC claim name
+	diskMap       map[int]string    // PhysicalDrive index -> volume name
+	retryCount    int
+	everSucceeded bool // true after at least one successful CollectDiskCounters
+	stopped       bool
+	stopReason    string
+	closed        bool
 }
 
 func (vs *vmState) close() {
@@ -394,17 +395,31 @@ func (c *Collector) handleScrapeError(containerID string, vs *vmState, err error
 	vs.retryCount++
 	retries, max := vs.retryCount, c.cfg.MaxRetries
 	ns, vmi := vs.namespace, vs.vmi
+	everSucceeded := vs.everSucceeded
 	vs.mu.Unlock()
 
 	c.log.Info("qga: scrape error",
 		"namespace", ns, "vmi", vmi,
 		"error", err, "retries", retries, "max", max)
 
-	// Soft errors: drop after MaxRetries so a later poll re-dials (agent may
-	// come up after guest boot). Avoid permanent mute on the same container ID.
-	if retries >= max {
-		c.dropVM(containerID, vs, fmt.Sprintf("max retries (%d): %v", max, err))
+	if retries < max {
+		return
 	}
+
+	// Never produced a good scrape for this container: permanent stop (same
+	// idea as blacklist). Avoids forever re-dialing Linux/no-agent VMs.
+	if !everSucceeded {
+		vs.mu.Lock()
+		vs.stopped = true
+		vs.stopReason = fmt.Sprintf("max retries (%d) with no prior success: %v", max, err)
+		vs.mu.Unlock()
+		c.log.Warn("qga: stopping collection, max retries with no prior success",
+			"namespace", ns, "vmi", vmi, "last_error", err)
+		return
+	}
+
+	// Previously worked: drop so a later poll re-dials (agent may recover).
+	c.dropVM(containerID, vs, fmt.Sprintf("max retries (%d): %v", max, err))
 }
 
 func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, error) {
@@ -490,6 +505,7 @@ func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, erro
 
 	vs.prevSnapshot = currSnapshot
 	vs.retryCount = 0
+	vs.everSucceeded = true
 
 	if len(disks) == 0 {
 		return nil, nil
