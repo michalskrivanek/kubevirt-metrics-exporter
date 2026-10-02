@@ -99,7 +99,7 @@ func Parse() *Config {
 	var qgaTimeout int
 	flag.IntVar(&qgaTimeout, "qga-timeout", envIntOrDefault("QGA_TIMEOUT", 10), "Timeout in seconds for individual QGA agent commands")
 	flag.DurationVar(&c.QGAExecWait, "qga-exec-wait", envDurationOrDefault("QGA_EXEC_WAIT", 1*time.Second), "Wait time between guest-exec and guest-exec-status")
-	flag.IntVar(&c.QGARetries, "qga-retries", envIntOrDefault("QGA_RETRIES", 10), "Max consecutive failures before stopping QGA polling for a VM")
+	flag.IntVar(&c.QGARetries, "qga-retries", envIntOrDefault("QGA_RETRIES", 10), "Max consecutive failures before falling back to 60x slower QGA probing for a VM")
 	flag.IntVar(&c.QGAConcurrency, "qga-concurrency", envIntOrDefault("QGA_CONCURRENCY", 8), "Max concurrent QGA operations")
 	flag.StringVar(&c.QGALabelFilter, "qga-label-filter", envOrDefault("QGA_LABEL_FILTER", ""), "Additional label selector for QGA virt-launcher pods")
 

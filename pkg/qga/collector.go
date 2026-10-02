@@ -43,8 +43,7 @@ type vmState struct {
 	pvcMap       map[string]string // volume name -> PVC claim name
 	diskMap      map[int]string    // PhysicalDrive index -> volume name
 	retryCount   int
-	stopped      bool
-	stopReason   string
+	passive      bool // true after MaxRetries or blacklist; scraped only on the slow cycle
 	closed       bool
 }
 
@@ -87,8 +86,18 @@ type Collector struct {
 	scrapeErrors float64
 	lastPollTS   float64
 
-	connMu sync.RWMutex
-	vms    map[string]*vmState
+	connMu        sync.RWMutex
+	vms           map[string]*vmState
+	lastPassiveAt time.Time
+}
+
+const passiveCycleFactor = 60
+
+func (c *Collector) passiveInterval() time.Duration {
+	if c.cfg.PollInterval > 0 {
+		return passiveCycleFactor * c.cfg.PollInterval
+	}
+	return time.Hour
 }
 
 func NewCollector(cfg CollectorConfig, podStore cache.Store, criClient *cri.Client, dynClient dynamic.Interface, log *slog.Logger) *Collector {
@@ -185,11 +194,16 @@ type podInfo struct {
 	vmiName   string
 }
 
-// scrapeBudget is the wall-clock deadline for one VM scrape: guest-exec plus
-// guest-exec-status polls and the sleeps between them, with a small margin.
-func (c *Collector) scrapeBudget() time.Duration {
+// scrapeBudget is the wall-clock deadline for one VM scrape: optional
+// guest-get-disks, guest-exec, guest-exec-status polls and the sleeps between
+// them, with a small margin.
+func (c *Collector) scrapeBudget(needDiskMap bool) time.Duration {
 	agent := time.Duration(c.cfg.QGATimeout) * time.Second
-	return agent*(1+guestExecStatusAttempts) + c.cfg.ExecWait*time.Duration(guestExecStatusAttempts) + 2*time.Second
+	budget := agent*(1+guestExecStatusAttempts) + c.cfg.ExecWait*time.Duration(guestExecStatusAttempts) + 2*time.Second
+	if needDiskMap {
+		budget += agent // guest-get-disks (plus DomainGetXMLDesc is local/fast)
+	}
+	return budget
 }
 
 func isDeadClient(err error) bool {
@@ -245,8 +259,6 @@ func (c *Collector) poll(ctx context.Context) {
 			vmiName:   vmiName,
 		})
 	}
-
-	c.log.Info("qga: found virt-launcher pods", "count", len(allPods))
 
 	type target struct {
 		podInfo
@@ -308,10 +320,18 @@ func (c *Collector) poll(ctx context.Context) {
 	}
 
 	var (
-		resultsMu    sync.Mutex
-		results      []vmiResult
-		scrapeErrors int
+		resultsMu     sync.Mutex
+		results       []vmiResult
+		scrapeErrors  int
+		passive       int
+		passiveNames  []string
+		probedPassive bool
 	)
+	debug := c.log.Enabled(ctx, slog.LevelDebug)
+
+	c.mu.Lock()
+	passiveDue := !c.lastPassiveAt.IsZero() && time.Since(c.lastPassiveAt) >= c.passiveInterval()
+	c.mu.Unlock()
 
 	sem := make(chan struct{}, c.cfg.Concurrency)
 	var wg sync.WaitGroup
@@ -325,19 +345,24 @@ func (c *Collector) poll(ctx context.Context) {
 
 	for containerID, vs := range snapshot {
 		vs.mu.Lock()
-		stopped := vs.stopped
+		isPassive := vs.passive
 		dead := vs.closed || vs.client.Closed()
-		stopReason := vs.stopReason
 		vs.mu.Unlock()
 
-		if stopped {
-			c.log.Debug("qga: skipping VM", "vmi", vs.vmi, "reason", stopReason)
-			continue
-		}
 		if dead {
 			c.dropVM(containerID, vs, "client already closed")
 			scrapeErrors++
 			continue
+		}
+		if isPassive {
+			passive++
+			if debug {
+				passiveNames = append(passiveNames, vs.namespace+"/"+vs.vmi)
+			}
+			if !passiveDue {
+				continue
+			}
+			probedPassive = true
 		}
 
 		wg.Add(1)
@@ -368,19 +393,43 @@ func (c *Collector) poll(ctx context.Context) {
 	c.results = results
 	c.scrapeErrors += float64(scrapeErrors)
 	c.lastPollTS = float64(time.Now().Unix())
+	if probedPassive {
+		c.lastPassiveAt = time.Now()
+	}
 	c.mu.Unlock()
 
-	c.log.Info("qga: poll cycle complete", "vms_with_data", len(results), "errors", scrapeErrors)
+	c.log.Info("qga: poll cycle complete",
+		"pods", len(allPods), "vms_with_data", len(results), "errors", scrapeErrors, "passive", passive)
+	if debug && passive > 0 {
+		c.log.Debug("qga: passive VMs", "vms", passiveNames)
+	}
+}
+
+func (c *Collector) markPassive(vs *vmState, err error) {
+	vs.mu.Lock()
+	already := vs.passive
+	ns, vmi := vs.namespace, vs.vmi
+	vs.passive = true
+	vs.prevSnapshot = nil
+	vs.diskMap = nil
+	vs.mu.Unlock()
+	if already {
+		return
+	}
+
+	c.mu.Lock()
+	if c.lastPassiveAt.IsZero() {
+		c.lastPassiveAt = time.Now()
+	}
+	c.mu.Unlock()
+	c.log.Warn("qga: falling back to passive probing",
+		"namespace", ns, "vmi", vmi,
+		"interval", c.passiveInterval(), "last_error", err)
 }
 
 func (c *Collector) handleScrapeError(containerID string, vs *vmState, err error) {
 	if errors.Is(err, ErrCommandBlacklisted) {
-		vs.mu.Lock()
-		vs.stopped = true
-		vs.stopReason = "command blacklisted"
-		vs.mu.Unlock()
-		c.log.Warn("qga: stopping collection, command blacklisted",
-			"namespace", vs.namespace, "vmi", vs.vmi)
+		c.markPassive(vs, err)
 		return
 	}
 
@@ -400,11 +449,11 @@ func (c *Collector) handleScrapeError(containerID string, vs *vmState, err error
 		"namespace", ns, "vmi", vmi,
 		"error", err, "retries", retries, "max", max)
 
-	// Soft errors: drop after MaxRetries so a later poll re-dials (agent may
-	// come up after guest boot). Avoid permanent mute on the same container ID.
-	if retries >= max {
-		c.dropVM(containerID, vs, fmt.Sprintf("max retries (%d): %v", max, err))
+	if retries < max {
+		return
 	}
+
+	c.markPassive(vs, err)
 }
 
 func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, error) {
@@ -418,9 +467,16 @@ func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, erro
 	needDiskMap := vs.diskMap == nil
 	vs.mu.Unlock()
 
-	scrapeCtx, cancel := context.WithTimeout(ctx, c.scrapeBudget())
+	scrapeCtx, cancel := context.WithTimeout(ctx, c.scrapeBudget(needDiskMap))
 	defer cancel()
 
+	counters, err := CollectDiskCounters(scrapeCtx, client, c.cfg.QGATimeout, c.cfg.ExecWait, c.log, vmi)
+	if err != nil {
+		return nil, err
+	}
+
+	// Map only after a successful guest-exec so failing VMs (Linux / no
+	// powershell / blacklist) skip guest-get-disks entirely.
 	if needDiskMap {
 		if diskMap := c.tryBuildDiskMap(scrapeCtx, client, ns, vmi); diskMap != nil {
 			vs.mu.Lock()
@@ -429,11 +485,6 @@ func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, erro
 			}
 			vs.mu.Unlock()
 		}
-	}
-
-	counters, err := CollectDiskCounters(scrapeCtx, client, c.cfg.QGATimeout, c.cfg.ExecWait, c.log, vmi)
-	if err != nil {
-		return nil, err
 	}
 
 	currSnapshot := make(map[string]DiskCounters, len(counters))
@@ -490,6 +541,7 @@ func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, erro
 
 	vs.prevSnapshot = currSnapshot
 	vs.retryCount = 0
+	vs.passive = false
 
 	if len(disks) == 0 {
 		return nil, nil
@@ -505,11 +557,6 @@ func (c *Collector) scrapeVM(ctx context.Context, vs *vmState) (*vmiResult, erro
 }
 
 func (c *Collector) tryBuildDiskMap(ctx context.Context, client *qmp.Client, ns, vmi string) map[int]string {
-	domainXML, err := client.DomainGetXMLDesc()
-	if err != nil {
-		c.log.Warn("qga: DomainGetXMLDesc failed, disk mapping unavailable", "vmi", vmi, "error", err)
-		return nil
-	}
 	guestDisks, err := GuestGetDisks(ctx, client, c.cfg.QGATimeout)
 	if err != nil {
 		c.log.Warn("qga: guest-get-disks failed, disk mapping unavailable", "vmi", vmi, "error", err)
@@ -524,9 +571,20 @@ func (c *Collector) tryBuildDiskMap(ctx context.Context, client *qmp.Client, ns,
 			"ctrl_fn", gd.Location.Controller.Function,
 			"bus", gd.Location.Bus, "target", gd.Location.Target, "unit", gd.Location.Unit)
 	}
+	if len(guestDisks) == 0 {
+		return nil
+	}
+	domainXML, err := client.DomainGetXMLDesc()
+	if err != nil {
+		c.log.Warn("qga: DomainGetXMLDesc failed, disk mapping unavailable", "vmi", vmi, "error", err)
+		return nil
+	}
 	diskMap, err := BuildDiskMapping(domainXML, guestDisks)
 	if err != nil {
 		c.log.Warn("qga: building disk mapping failed", "vmi", vmi, "error", err)
+		return nil
+	}
+	if len(diskMap) == 0 {
 		return nil
 	}
 	c.log.Info("qga: disk mapping established", "vmi", vmi, "mappings", diskMap)
@@ -553,7 +611,6 @@ func (c *Collector) connectVM(ctx context.Context, ns, vmi, podName string, pid 
 	defer agentCancel()
 
 	pvcMap := qmp.FetchPVCMap(agentCtx, c.dynClient, ns, vmi, c.log)
-	diskMap := c.tryBuildDiskMap(agentCtx, client, ns, vmi)
 
 	return &vmState{
 		client:    client,
@@ -561,6 +618,5 @@ func (c *Collector) connectVM(ctx context.Context, ns, vmi, podName string, pid 
 		vmi:       vmi,
 		podName:   podName,
 		pvcMap:    pvcMap,
-		diskMap:   diskMap,
 	}, nil
 }

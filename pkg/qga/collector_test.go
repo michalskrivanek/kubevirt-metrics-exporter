@@ -51,6 +51,21 @@ func pipeClient() *qmp.Client {
 	return qmp.ClientForTest(a)
 }
 
+func addLauncherPod(c *Collector, name string) {
+	GinkgoHelper()
+	Expect(c.podStore.Add(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			Labels: map[string]string{
+				"kubevirt.io":         "virt-launcher",
+				"vm.kubevirt.io/name": name,
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	})).To(Succeed())
+}
+
 func addVM(c *Collector, id string, client *qmp.Client) *vmState {
 	GinkgoHelper()
 	vs := &vmState{
@@ -87,18 +102,7 @@ var _ = Describe("QGA scrape recovery", func() {
 		client := pipeClient()
 		Expect(client.Close()).To(Succeed())
 		vs := addVM(c, "stuck", client)
-
-		Expect(c.podStore.Add(&corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "stuck",
-				Namespace: "default",
-				Labels: map[string]string{
-					"kubevirt.io":         "virt-launcher",
-					"vm.kubevirt.io/name": "stuck",
-				},
-			},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		})).To(Succeed())
+		addLauncherPod(c, "stuck")
 
 		// connectVM will fail (no /proc sock); drop of dead client still happens first.
 		c.poll(context.Background())
@@ -106,12 +110,11 @@ var _ = Describe("QGA scrape recovery", func() {
 		Expect(vs.closed).To(BeTrue())
 	})
 
-	It("drops on ErrClientClosed without burning permanent stopped state", func() {
+	It("drops on ErrClientClosed so the next poll can reconnect", func() {
 		c := testCollector(3)
 		vs := addVM(c, "vm", pipeClient())
 		c.handleScrapeError("vm", vs, qmp.ErrClientClosed)
 		Expect(c.vms).NotTo(HaveKey("vm"))
-		Expect(vs.stopped).To(BeFalse())
 		Expect(vs.closed).To(BeTrue())
 	})
 
@@ -123,24 +126,47 @@ var _ = Describe("QGA scrape recovery", func() {
 		Expect(vs.closed).To(BeTrue())
 	})
 
-	It("drops after MaxRetries instead of permanently stopping soft errors", func() {
+	It("moves a VM to passive probing after MaxRetries instead of dropping", func() {
 		c := testCollector(2)
+		c.cfg.PollInterval = time.Minute
 		vs := addVM(c, "vm", pipeClient())
-		soft := errors.New("powershell exited with code 1")
+		vs.prevSnapshot = map[string]DiskCounters{"0 C:": {}}
+		vs.diskMap = map[int]string{0: "vol-0"}
+		soft := errors.New("guest-exec: Guest agent is not responding")
 		c.handleScrapeError("vm", vs, soft)
 		Expect(c.vms).To(HaveKey("vm"))
+		Expect(vs.passive).To(BeFalse())
 		c.handleScrapeError("vm", vs, soft)
-		Expect(c.vms).NotTo(HaveKey("vm"))
-		Expect(vs.stopped).To(BeFalse())
-		Expect(vs.closed).To(BeTrue())
+		Expect(c.vms).To(HaveKey("vm"))
+		Expect(vs.passive).To(BeTrue())
+		Expect(vs.closed).To(BeFalse())
+		Expect(vs.prevSnapshot).To(BeNil())
+		Expect(vs.diskMap).To(BeNil())
+		Expect(c.lastPassiveAt).NotTo(BeZero())
+		Expect(c.passiveInterval()).To(Equal(60 * time.Minute))
 	})
 
-	It("keeps blacklisted VMs stopped without deleting the entry", func() {
+	It("skips passive VMs on the active poll until the slow cycle is due", func() {
+		c := testCollector(2)
+		c.cfg.PollInterval = time.Minute
+		vs := addVM(c, "vm", pipeClient())
+		vs.passive = true
+		c.lastPassiveAt = time.Now()
+		addLauncherPod(c, "vm")
+
+		c.poll(context.Background())
+		Expect(c.vms).To(HaveKey("vm"))
+		Expect(vs.retryCount).To(BeZero())
+		Expect(vs.passive).To(BeTrue())
+		Expect(vs.closed).To(BeFalse())
+	})
+
+	It("moves blacklisted VMs to passive probing without deleting the entry", func() {
 		c := testCollector(2)
 		vs := addVM(c, "vm", pipeClient())
 		c.handleScrapeError("vm", vs, ErrCommandBlacklisted)
 		Expect(c.vms).To(HaveKey("vm"))
-		Expect(vs.stopped).To(BeTrue())
+		Expect(vs.passive).To(BeTrue())
 		Expect(vs.closed).To(BeFalse())
 	})
 
@@ -148,10 +174,10 @@ var _ = Describe("QGA scrape recovery", func() {
 		c := testCollector(1)
 		c.cfg.QGATimeout = 10
 		c.cfg.ExecWait = time.Second
-		Expect(c.scrapeBudget()).To(Equal(
-			10*time.Second*(1+guestExecStatusAttempts) +
-				time.Second*time.Duration(guestExecStatusAttempts) +
-				2*time.Second,
-		))
+		base := 10*time.Second*(1+guestExecStatusAttempts) +
+			time.Second*time.Duration(guestExecStatusAttempts) +
+			2*time.Second
+		Expect(c.scrapeBudget(false)).To(Equal(base))
+		Expect(c.scrapeBudget(true)).To(Equal(base + 10*time.Second))
 	})
 })
