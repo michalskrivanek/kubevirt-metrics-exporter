@@ -484,6 +484,9 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+      # FIXME: p95 is not "all storage I/O" — recording/io.yaml only includes unresolved (non-PVC)
+      # devices. VM/PVC I/O lives in kme_block_io_latency_seconds and is omitted. See dashboard-io
+      # latency_quantiles_gauge.
       io_latency:
         kind: Panel
         spec:

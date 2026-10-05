@@ -2,6 +2,8 @@
 # Deviations: PersesDashboard CR wrapper; thanos-querier datasource; stripped
 # unsupported timezone + querySettings[].stack; refreshInterval 1m (upstream 15s);
 # overview drilldowns use /monitoring/v2/dashboards/view?dashboard=...&project=kubevirt-metrics-exporter
+# FIXME: latency panels look like "all storage I/O" but recording/io.yaml only uses unresolved
+# (non-PVC) devices — see comment on latency_quantiles_gauge.
 apiVersion: perses.dev/v1alpha2
 kind: PersesDashboard
 metadata:
@@ -87,6 +89,11 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+      # FIXME: These queries use openshift:cluster:io:latency:* from recording/io.yaml, which only
+      # rates kme_system_block_io_latency_seconds (devices the exporter could not map to a PVC).
+      # VM/PVC I/O is in kme_block_io_latency_seconds and is not included, so this panel can look
+      # empty or too low on a VM-heavy node. Either union both histograms in the rules, or rename
+      # the panel so it is clearly "unresolved/host leftover I/O" not cluster storage latency.
       latency_quantiles_gauge:
         kind: Panel
         spec:
@@ -178,6 +185,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+      # FIXME: p95 overlay uses the same system-only recording rules as latency_quantiles_gauge.
       storage_utilization_history:
         kind: Panel
         spec:
@@ -249,6 +257,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+      # FIXME: bucket ratios also come from those system-only recording rules (see latency_quantiles_gauge).
       859fb288b6a546a0bea31d734264727c:
         kind: Panel
         spec:
@@ -332,6 +341,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+      # FIXME: same system-only recording rules as latency_quantiles_gauge.
       latency_quantiles_history:
         kind: Panel
         spec:

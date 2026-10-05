@@ -14,6 +14,7 @@ spec:
     display:
       name: CPU
     panels:
+      # FIXME: query openshift:cluster:cpu:capacity:count — recorded as openshift:cluster:cpu:count?
       cluster_cpu_capacity:
         kind: Panel
         spec:
@@ -41,6 +42,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+      # FIXME: query openshift:cluster:cpu:vcpu:count — no matching recording rule name.
       cluster_vcpu_count:
         kind: Panel
         spec:
@@ -359,6 +361,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+      # FIXME: query openshift:node:cpu:capacity:count — recorded as openshift:node:cpu:count?
       node_cpu_capacity:
         kind: Panel
         spec:
@@ -436,6 +439,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+      # FIXME: query openshift:vm:cpu:vcpu:count — recorded as openshift:vm:cpu:requested:count?
       vm_vcpu_count:
         kind: Panel
         spec:

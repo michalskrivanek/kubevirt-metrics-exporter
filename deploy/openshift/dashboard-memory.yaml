@@ -254,6 +254,7 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
+            # FIXME(pr39): tier-2 swap-used rule has no temperature label; drop temperature="warm" or fix rule?
             - kind: TimeSeriesQuery
               spec:
                 plugin:
