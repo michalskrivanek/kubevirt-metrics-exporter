@@ -70,11 +70,12 @@ var (
 		nil,
 	)
 
-	// Aligned with node_exporter PR #3778.
+	// Aligned with node_exporter PR #3778 (plus node label for per-node joins).
 	ksmProfitDesc = prometheus.NewDesc(
 		"node_ksmd_general_profit_bytes",
 		"Net memory saved by KSM after subtracting rmap_item tracking overhead in bytes. Negative means KSM overhead exceeds savings.",
-		nil, nil,
+		[]string{"node"},
+		nil,
 	)
 
 	thpSplitPMDDesc = prometheus.NewDesc(
@@ -304,7 +305,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(ksmdCPUDesc, prometheus.CounterValue, c.node.ksmdCPU, c.cfg.NodeName)
 	}
 	if c.node.ksmProfitAvailable {
-		ch <- prometheus.MustNewConstMetric(ksmProfitDesc, prometheus.GaugeValue, float64(c.node.ksmProfit))
+		ch <- prometheus.MustNewConstMetric(ksmProfitDesc, prometheus.GaugeValue, float64(c.node.ksmProfit), c.cfg.NodeName)
 	}
 	if c.node.thpVMStatAvailable {
 		ch <- prometheus.MustNewConstMetric(thpSplitPMDDesc, prometheus.CounterValue, float64(c.node.thpSplitPMD), c.cfg.NodeName)

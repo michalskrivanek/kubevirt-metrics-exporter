@@ -680,6 +680,7 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 		m = metrics["node_ksmd_general_profit_bytes"]
 		Expect(m).To(HaveLen(1))
 		Expect(m[0].Gauge.GetValue()).To(Equal(float64(1044480)))
+		checkLabels(m[0], map[string]string{"node": "node1"})
 
 		By("checking vmstat THP counters")
 		m = metrics["kme_node_thp_split_pmd_total"]

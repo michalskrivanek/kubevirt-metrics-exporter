@@ -7,8 +7,12 @@ resources:
 - scc-clusterrole.yaml
 - scc-clusterrolebinding.yaml
 - datasource.yaml
-- dashboard.yaml
+- dashboard-overview.yaml
+- dashboard-cpu.yaml
+- dashboard-io.yaml
 - dashboard-memory.yaml
+- dashboard-io-latency.yaml
+- dashboard-memory-detailed.yaml
 - metrics-service.yaml
 - metrics-servicemonitor.yaml
 patches:
