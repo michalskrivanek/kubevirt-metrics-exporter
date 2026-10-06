@@ -20,22 +20,41 @@ var _ = Describe("readZoneinfo", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(os.WriteFile(filepath.Join(procRoot, "zoneinfo"), data, 0o644)).To(Succeed())
 
-		results, err := readZoneinfo(procRoot)
+		snap, err := readZoneinfo(procRoot)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(results).To(HaveLen(4))
+		Expect(snap.Zones).To(HaveLen(4))
+		Expect(snap.SlabReclaimable).To(BeEmpty())
 
-		Expect(results[0]).To(Equal(numaZoneMemory{
+		Expect(snap.Zones[0]).To(Equal(numaZoneMemory{
 			NUMA:         "0",
 			Zone:         "DMA",
 			PresentBytes: 4000 * zonePageSize,
 			FreeBytes:    2200 * zonePageSize,
 		}))
-		Expect(results[1].Zone).To(Equal("DMA32"))
-		Expect(results[1].PresentBytes).To(Equal(uint64(390000 * zonePageSize)))
-		Expect(results[2].Zone).To(Equal("Movable"))
-		Expect(results[2].PresentBytes).To(Equal(uint64(24000000 * zonePageSize)))
-		Expect(results[3].Zone).To(Equal("Normal"))
-		Expect(results[3].PresentBytes).To(Equal(uint64(131072 * zonePageSize)))
+		Expect(snap.Zones[1].Zone).To(Equal("DMA32"))
+		Expect(snap.Zones[1].PresentBytes).To(Equal(uint64(390000 * zonePageSize)))
+		Expect(snap.Zones[2].Zone).To(Equal("Movable"))
+		Expect(snap.Zones[2].PresentBytes).To(Equal(uint64(24000000 * zonePageSize)))
+		Expect(snap.Zones[3].Zone).To(Equal("Normal"))
+		Expect(snap.Zones[3].PresentBytes).To(Equal(uint64(131072 * zonePageSize)))
+	})
+
+	It("parses per-node nr_slab_reclaimable once per NUMA node", func() {
+		data, err := os.ReadFile(filepath.Join("testdata", "zoneinfo_dual_numa_slab"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(filepath.Join(procRoot, "zoneinfo"), data, 0o644)).To(Succeed())
+
+		snap, err := readZoneinfo(procRoot)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.SlabReclaimable).To(Equal([]numaSlabReclaimable{
+			{NUMA: "0", ReclaimableBytes: 117275 * zonePageSize},
+			{NUMA: "1", ReclaimableBytes: 127201 * zonePageSize},
+		}))
+		Expect(snap.Zones).To(HaveLen(3))
+		Expect(snap.Zones[0].Zone).To(Equal("DMA"))
+		Expect(snap.Zones[1].Zone).To(Equal("DMA32"))
+		Expect(snap.Zones[2].NUMA).To(Equal("1"))
+		Expect(snap.Zones[2].Zone).To(Equal("Normal"))
 	})
 
 	It("returns error when zoneinfo is missing", func() {

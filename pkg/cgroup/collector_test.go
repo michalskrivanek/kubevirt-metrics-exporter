@@ -727,6 +727,10 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 			{NUMA: "0", Zone: "DMA32", PresentBytes: 1024, FreeBytes: 256},
 			{NUMA: "0", Zone: "Movable", PresentBytes: 2048, FreeBytes: 512},
 		}
+		c.node.slabReclaimableByNuma = []numaSlabReclaimable{
+			{NUMA: "0", ReclaimableBytes: 4096},
+			{NUMA: "1", ReclaimableBytes: 8192},
+		}
 		c.node.zoneinfoAvailable = true
 		c.mu.Unlock()
 		metrics = collectMetrics(c)
@@ -739,6 +743,13 @@ var _ = Describe("Collector end-to-end (synthetic)", func() {
 		m = metrics["kme_node_zone_free_bytes"]
 		Expect(m).To(HaveLen(2))
 		Expect(m[0].Gauge.GetValue()).To(Equal(float64(256)))
+
+		m = metrics["kme_node_slab_reclaimable_bytes"]
+		Expect(m).To(HaveLen(2))
+		checkLabels(m[0], map[string]string{"node": "node1", "numa": "0"})
+		Expect(m[0].Gauge.GetValue()).To(Equal(float64(4096)))
+		checkLabels(m[1], map[string]string{"node": "node1", "numa": "1"})
+		Expect(m[1].Gauge.GetValue()).To(Equal(float64(8192)))
 	})
 
 	It("emits unmovable and movable metrics for every buddy NUMA node", func() {

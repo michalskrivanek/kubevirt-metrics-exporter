@@ -1,0 +1,21 @@
+Node 0, zone      DMA
+  per-node stats
+      nr_slab_reclaimable 117275
+      nr_slab_unreclaimable 141473
+  pages free     2816
+        min      58
+        low      96
+        high     134
+     present   3999
+Node 0, zone    DMA32
+  pages free     176048
+     present  422656
+Node 1, zone      DMA
+  pages free     0
+     present   0
+Node 1, zone   Normal
+  per-node stats
+      nr_slab_reclaimable 127201
+      nr_slab_unreclaimable 159608
+  pages free     249194
+     present  749568

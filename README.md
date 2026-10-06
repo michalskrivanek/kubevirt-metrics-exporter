@@ -123,6 +123,7 @@ Per-node kernel thread and KSM metrics:
 | `kme_node_unmovable_bytes_all_orders` | gauge | node, numa | Unmovable free buddy memory across all orders in bytes (Normal + Movable zones, `/proc/pagetypinfo`) |
 | `kme_node_zone_present_bytes` | gauge | node, numa, zone | Zone size in bytes from `/proc/zoneinfo` `present` pages |
 | `kme_node_zone_free_bytes` | gauge | node, numa, zone | Zone free pages in bytes from `/proc/zoneinfo` `pages free` |
+| `kme_node_slab_reclaimable_bytes` | gauge | node, numa | Reclaimable slab in bytes from zoneinfo per-node `nr_slab_reclaimable` (not zone-scoped) |
 | `kme_cgroup_scrape_errors_total` | counter | | Errors during cgroup poll cycles |
 | `kme_cgroup_last_poll_timestamp_seconds` | gauge | | Unix timestamp of last cgroup poll |
 
@@ -188,7 +189,7 @@ The dashboard and KME metrics address both.
 |--------|-----------------|----------|
 | `/proc/buddyinfo` | Free buddy **blocks** per zone and NUMA node, by **order only** (not migrate type). **Exact** block counts. | `kme_node_buddy_bytes_*` |
 | `/proc/pagetypeinfo` | Same free-block shape, split by **migrate type** (Movable, Unmovable, Reclaimable, Isolate, …). Counts can be **capped** (e.g. `>100000`) when the kernel avoids long zone-lock holds. | `kme_node_unmovable_bytes_*`; input to movable derivation |
-| `/proc/zoneinfo` | Structural zone sizes (`present`) and free pages (`pages free`) per zone and NUMA node. | `kme_node_zone_present_bytes`, `kme_node_zone_free_bytes` |
+| `/proc/zoneinfo` | Structural zone sizes (`present`) and free pages (`pages free`) per zone and NUMA node; per-node `nr_slab_reclaimable`. | `kme_node_zone_present_bytes`, `kme_node_zone_free_bytes`, `kme_node_slab_reclaimable_bytes` |
 | cgroup v2 `memory.stat` | Per-QEMU `anon_thp`, `shmem_thp`, `file_thp`, etc. | `container_memory_*_thp_bytes` |
 | `/proc/vmstat` | Node counters `thp_split_pmd`, `thp_collapse_alloc` | `kme_node_thp_*_total` |
 | virt-handler metrics | libvirt `dommemstat` RSS and balloon/domain size | `kubevirt_vmi_memory_resident_bytes`, `kubevirt_vmi_memory_domain_bytes` |
@@ -215,6 +216,7 @@ excluded               ← /proc/pagetypeinfo same THP zone (Unmovable + Isolate
 movable-capable        ← buddy − excluded   (per NUMA, clamped at 0)
 unmovable freelist     ← pagetypeinfo Unmovable summed across Normal + Movable zones
 kernelcore pool        ← zoneinfo present/free on DMA + DMA32 + Normal zones
+kernelcore slab recl   ← zoneinfo per-node nr_slab_reclaimable (occupies the pool on split layout)
 ```
 
 Exported gauges:
@@ -225,6 +227,7 @@ Exported gauges:
 | `kme_node_movable_bytes_order_ge_9` / `_all_orders` | **Movable-capable** free buddy in the THP zone: buddy minus Unmovable and Isolate freelist pages. |
 | `kme_node_unmovable_bytes_order_ge_9` / `_all_orders` | **Unmovable** migrate-type freelist only (Normal + Movable zones). Isolate is subtracted for movable-capable math but not included here. |
 | `kme_node_zone_present_bytes` / `_free_bytes` | Structural zone size and free pages from zoneinfo (`present` / `pages free`). |
+| `kme_node_slab_reclaimable_bytes` | Per-NUMA reclaimable slab from zoneinfo `nr_slab_reclaimable`. On split layout this is the reclaimable portion of kernelcore **used** (not file cache; that lives in Movable). |
 
 **Important:** `movable-capable` is **not** the pagetypeinfo “Movable” line. Buddy total includes **Reclaimable** (and other) freelist pages that are not Unmovable or Isolate; those remain in buddy and are counted in `movable-capable` because only Unmovable and Isolate are subtracted. In practice, `movable-capable` is often **above** the pagetype Movable line at the same NUMA node; the gap is largely **reclaimable freelist** memory (and any other migrate types except Isolate).
 

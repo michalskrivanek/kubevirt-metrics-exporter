@@ -147,6 +147,13 @@ var (
 		[]string{"node", "numa", "zone"},
 		nil,
 	)
+
+	slabReclaimableBytesDesc = prometheus.NewDesc(
+		"kme_node_slab_reclaimable_bytes",
+		"Reclaimable slab in bytes from /proc/zoneinfo per-node nr_slab_reclaimable (not zone-scoped; on split layout this occupies the kernelcore pool)",
+		[]string{"node", "numa"},
+		nil,
+	)
 )
 
 // Operational metric descriptors.
@@ -198,8 +205,9 @@ type nodeStats struct {
 	excludedByNuma     []numaPagetypeExcluded
 	unmovableByNuma    []numaPagetypeExcluded
 	pagetypeAvailable  bool
-	zoneByNuma         []numaZoneMemory
-	zoneinfoAvailable  bool
+	zoneByNuma            []numaZoneMemory
+	slabReclaimableByNuma []numaSlabReclaimable
+	zoneinfoAvailable     bool
 }
 
 type Collector struct {
@@ -278,6 +286,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- unmovableAllOrdersDesc
 	ch <- zonePresentBytesDesc
 	ch <- zoneFreeBytesDesc
+	ch <- slabReclaimableBytesDesc
 	ch <- scrapeErrorsDesc
 	ch <- lastPollDesc
 }
@@ -338,6 +347,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		for _, z := range c.node.zoneByNuma {
 			ch <- prometheus.MustNewConstMetric(zonePresentBytesDesc, prometheus.GaugeValue, float64(z.PresentBytes), c.cfg.NodeName, z.NUMA, z.Zone)
 			ch <- prometheus.MustNewConstMetric(zoneFreeBytesDesc, prometheus.GaugeValue, float64(z.FreeBytes), c.cfg.NodeName, z.NUMA, z.Zone)
+		}
+		for _, s := range c.node.slabReclaimableByNuma {
+			ch <- prometheus.MustNewConstMetric(slabReclaimableBytesDesc, prometheus.GaugeValue, float64(s.ReclaimableBytes), c.cfg.NodeName, s.NUMA)
 		}
 	}
 }
@@ -479,10 +491,11 @@ func (c *Collector) collectNodeStats() nodeStats {
 		}
 	}
 
-	if zones, err := readZoneinfo(c.cfg.ProcPath); err != nil {
+	if snap, err := readZoneinfo(c.cfg.ProcPath); err != nil {
 		c.log.Debug("cgroup: reading zoneinfo", "error", err)
 	} else {
-		ns.zoneByNuma = zones
+		ns.zoneByNuma = snap.Zones
+		ns.slabReclaimableByNuma = snap.SlabReclaimable
 		ns.zoneinfoAvailable = true
 	}
 
