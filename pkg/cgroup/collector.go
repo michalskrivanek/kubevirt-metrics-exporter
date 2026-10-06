@@ -191,20 +191,20 @@ type vmiMemStats struct {
 }
 
 type nodeStats struct {
-	khugepageCPU       float64
-	khugepageAvailable bool
-	ksmdCPU            float64
-	ksmdAvailable      bool
-	ksmProfit          int64
-	ksmProfitAvailable bool
-	thpSplitPMD        uint64
-	thpCollapseAlloc   uint64
-	thpVMStatAvailable bool
-	buddyByNuma        []numaBuddyFree
-	buddyAvailable     bool
-	excludedByNuma     []numaPagetypeExcluded
-	unmovableByNuma    []numaPagetypeExcluded
-	pagetypeAvailable  bool
+	khugepageCPU          float64
+	khugepageAvailable    bool
+	ksmdCPU               float64
+	ksmdAvailable         bool
+	ksmProfit             int64
+	ksmProfitAvailable    bool
+	thpSplitPMD           uint64
+	thpCollapseAlloc      uint64
+	thpVMStatAvailable    bool
+	buddyByNuma           []numaBuddyFree
+	buddyAvailable        bool
+	excludedByNuma        []numaPagetypeExcluded
+	unmovableByNuma       []numaPagetypeExcluded
+	pagetypeAvailable     bool
 	zoneByNuma            []numaZoneMemory
 	slabReclaimableByNuma []numaSlabReclaimable
 	zoneinfoAvailable     bool

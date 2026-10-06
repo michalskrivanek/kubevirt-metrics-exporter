@@ -167,10 +167,10 @@ This section explains the **KubeVirt VM Memory Details (Dev Preview)** Perses da
 | Layer | Source | What it measures | Dashboard panel |
 |-------|--------|------------------|-----------------|
 | **Structural layout** | `/proc/zoneinfo` | Zone sizes (`present`) and in-zone free pages. When `ZONE_MOVABLE` is populated (`kernelcore=` layout): DMA+DMA32+Normal ≈ pinned kernel pool; Movable ≈ guest/THP pool. Without Movable, DMA+DMA32+Normal is essentially all node RAM — kernelcore used is not meaningful. | Kernelcore pool |
-| **THP buddy stock** | `/proc/buddyinfo` + `/proc/pagetypeinfo` | Free buddy blocks in the **Movable zone** (else Normal): total, movable-capable, and pinned freelist. | Movable zone |
-| **Node reclaim context** | `MemAvailable` (node_exporter) | Node-wide estimate including reclaimable cache — **not** per-NUMA and **not** buddy-only. | Movable zone (dashed) |
+| **THP buddy stock** | `/proc/buddyinfo` + `/proc/pagetypeinfo` | Free buddy blocks in the **Movable zone** (else Normal): total, movable-capable, and pinned freelist. | Movable zone (stack) |
+| **Node reclaim context** | `MemAvailable` (node_exporter) | Node-wide estimate including reclaimable cache — **not** per-NUMA and **not** buddy-only. | Memory dashboard (not the stacked THP panel) |
 
-On split-layout hosts only, kernelcore **used** (present − free) is mostly kernel/slab/page-table allocations. **Free + used = present** (summed over DMA+DMA32+Normal per NUMA) — the dashboard plots free and used only; no separate cap line. Lines are gated on Movable zone presence (`kernelcore_zoneinfo_gate`). On fallback hosts the Kernelcore panel is empty; the Movable zone panel's **Non-THP-movable** line (`buddy − movable`) approximates the small pinned freelist there.
+On split-layout hosts only, kernelcore **used** (present − free over DMA+DMA32+Normal) is mostly kernel/slab/page-table. The Kernelcore panel is gated on Movable `present > 0` so that `used` is not almost all of RAM. It stacks **Unreclaimable used** (`used − slab recl`) + **Reclaimable slab** + **Free** (`visual.stack: all`, one `sum()` per slice). Pin `$numa` to inspect one socket. Reclaimable slab is a real per-NUMA gauge everywhere; it is only a kernelcore slice when Movable holds user pages. On fallback hosts the panel is empty — use the Movable zone panel (Non-THP-movable ≈ unmovable freelist).
 
 ### Background: transparent huge pages (THP)
 
@@ -236,11 +236,11 @@ Exported gauges:
 - **`unmovable_bytes_order_ge_9`** — free Unmovable blocks at order ≥ 9 (2 MiB+). This is the portion of **THP-sized** free buddy that cannot be used for collapse. It is required internally to compute `movable_bytes_order_ge_9` and is useful for alerts/debugging (“how much 2 MiB-class free stock is pinned unmovable?”).
 - **`unmovable_bytes_all_orders`** — all free Unmovable blocks (orders 0–10). Most unmovable free memory usually sits in **small** orders; this line shows total pinned freelist footprint but does **not** substitute for ge9 when assessing immediate THP readiness.
 
-The **KubeVirt VM Memory Details (Dev Preview)** dashboard plots movable-capable buddy lines plus **Non-THP-movable** (`buddy − movable` in the THP zone). It does not plot `unmovable_bytes_all_orders` or `unmovable_bytes_order_ge_9` directly; the ge9 gap `buddy_ge9 − movable_ge9` already reflects unmovable (and reclaimable) stock at 2 MiB orders.
+The **KubeVirt VM Memory Details (Dev Preview)** dashboard stacks THP buddy free as non-THP-movable + movable below 2 MiB + ≥2 MiB movable (`visual.stack: all`). It does not plot `unmovable_bytes_all_orders` or `unmovable_bytes_order_ge_9` directly.
 
 ### Dashboard panels
 
-**Limit** (`$topk`, default 5) — caps most panels to the top *N* series by **instant value** (Prometheus `topk`). Not used on the Kernelcore pool panel. Multi-line panels share an anchor so related series stay aligned: buddy free total for Movable zone node·NUMA pairs; metric sum per node for khugepaged/ksmd/KSM-profit and split/collapse (see table).
+**Limit** (`$topk`, default 5) — caps most panels to the top *N* series by **instant value** (Prometheus `topk`). Not used on the Kernelcore pool or Movable-zone THP stacks (`sum()` of the current `$node`/`$numa` selection). Remaining multi-line panels share an anchor so related series stay aligned: metric sum per node for khugepaged/ksmd/KSM-profit and split/collapse (see table).
 
 **VM Memory** — scoped by `node` (pick one node for per-VM detail). Cgroup THP metrics use `sum without (pod)` so `node` stays on the series for the virt-handler join. Resident and domain metrics are filtered with `kubevirt_vmi_info{phase="running"}` (includes paused VMs; excludes stopped/transitional/stale post-migration series).
 
@@ -249,24 +249,24 @@ The **KubeVirt VM Memory Details (Dev Preview)** dashboard plots movable-capable
 | **THP / Resident** | THP / resident % | `topk(N, sum(anon_thp + shmem_thp) / resident × 100)` joined on `(namespace, name, node)`; resident filtered with `kubevirt_vmi_info{phase="running"}` | Share of **RSS** already backed by THP. Rising → more guest RAM in huge pages (successful collapse or huge-friendly allocation). Low → mostly 4 KiB pages. Denominator is libvirt RSS (`kubevirt_vmi_memory_resident_bytes`), numerator from QEMU cgroup `memory.stat` (`sum without (pod)`). |
 | **Resident / Configured** | resident / configured % | `topk(N, resident / domain_bytes × 100)` with running-VMI filter on both sides | Share of **ballooned domain size** actually resident. Context for memory footprint, not THP-specific. Low ratio with a large balloon means much “configured” memory is not in RAM. |
 
-**Node — THP readiness (Movable zone)** — buddy/movable lines share the same top node·NUMA set (anchor: **buddy free total**).
+**Node — THP readiness (Movable zone)** — stacked (`visual.stack: all`); height = buddy free total in the THP zone (Movable if present, else Normal) for the current `$node`/`$numa` selection. Pin Node/NUMA — one stack, not per-node series.
 
-| Line | Limit sort | Metric | Calculation |
-|------|------------|--------|-------------|
-| **≥2 MiB Movable** | anchor | `movable_bytes_order_ge_9` | `buddy − unmovable − isolate` at orders ≥9 (Movable zone, or Normal if no Movable) |
-| **Movable total** | anchor | `movable_bytes_all_orders` | Same formula, orders 0–10 |
-| **Buddy free total** | buddy free bytes | `buddy_bytes_all_orders` | Sum of all free buddy blocks from `/proc/buddyinfo` |
-| **Non-THP-movable freelist** | anchor | `buddy − movable` | Unmovable + Isolate free buddy in the THP zone only |
-| **MemAvailable** (dashed) | MemAvailable bytes | `node_memory_MemAvailable_bytes` via `label_replace(instance→node)` | Node-wide reclaim estimate; includes cache and all zones |
+| Slice (bottom → top) | PromQL | Interpretation |
+|----------------------|--------|----------------|
+| **Non-THP-movable freelist** | `sum(buddy_all) − sum(movable_all)` | Unmovable + Isolate free buddy; not usable as THP stock |
+| **Movable below 2 MiB** | `sum(movable_all) − sum(movable_ge9)` | Movable-capable but not yet 2 MiB blocks (compaction/collapse) |
+| **≥2 MiB Movable** | `sum(movable_ge9)` | Ready THP-sized movable free stock |
+| **MemAvailable** (dashed overlay) | `sum(MemAvailable)` for `$node` | Node-wide reclaim; **not** a buddy slice. Same Perses overlay as the cluster memory dashboard (`lineStyle: dashed`, `areaOpacity: 0`). If it inflates stack height, overlay failed. |
 
-**Node — THP readiness (Kernelcore pool)** — **split-layout hosts only** (populated Movable zone). Empty on fallback hosts; use the Movable zone panel there (Non-THP-movable ≈ unmovable freelist).
+**Node — THP readiness (Kernelcore pool)** — **split-layout hosts only** (populated Movable zone). Empty on fallback hosts; do not interpret DMA+DMA32+Normal `used` there as kernel stock. Stacked (`visual.stack: all`); height = `present` for the current `$node`/`$numa` selection.
 
-| Line | PromQL idea | Interpretation |
-|------|-------------|----------------|
-| **Kernelcore free** | `sum(zone_free{DMA\|DMA32\|Normal})` × gate | Free pages on buddy freelists in core zones |
-| **Kernelcore used** | `sum(zone_present{…}) − sum(zone_free{…})` × gate | Allocated pages in core zones; **free + used = sum(present)** per NUMA |
+| Slice (bottom → top) | PromQL | Interpretation |
+|----------------------|--------|----------------|
+| **Unreclaimable used** | `sum(present) − sum(free) − sum(slab_recl)` over DMA\|DMA32\|Normal, × gate | Used minus reclaimable slab (not equal to unreclaimable slab alone) |
+| **Reclaimable slab** | `sum(slab_recl)` × gate | Per-NUMA `nr_slab_reclaimable`; not Movable file cache |
+| **Free** | `sum(free)` over DMA\|DMA32\|Normal × gate | Buddy free in core zones |
 
-Gate: hidden dashboard variable `kernelcore_zoneinfo_gate` (`movable_present` \| `always`). To drop the gate once all nodes use split layout: set `always`, then remove the variable and trailing ` $kernelcore_zoneinfo_gate` from the two zoneinfo queries.
+`zone=~"DMA|DMA32|Normal"` is required on present/free (those series are per-zone; omitting Movable is the pool). Slab has no zone label. Gate: `kernelcore_zoneinfo_gate` (`movable_present` \| `always`). To drop the gate once all nodes use split layout: set `always`, then remove ` $kernelcore_zoneinfo_gate` from the three queries.
 
 **Node — khugepaged & ksmd CPU / KSM profit** — CPU lines and profit share the same top **nodes** (anchor: `khugepaged CPU % + ksmd CPU %` per node). Dual Y-axis: left = CPU %, right = profit bytes (dashed).
 
@@ -307,17 +307,18 @@ Counters are **lifetime** totals; the dashboard shows **recent rate**. Near-zero
 | split_pmd rate ↑, collapse flat | THPs being torn down faster than formed — check pressure, mapping churn, or policy. |
 | VM THP/Resident ↑ | Guest using more huge-backed RAM. |
 | VM THP/Resident low, movable ge9 high | THP opportunity not yet taken (policy, workload, or khugepaged not needed yet). |
-| MemAvailable high, movable ge9 low | Common: plenty of reclaimable cache globally, but **buddy freelist** at 2 MiB orders is still tight. |
-| MemAvailable ≈ Movable zone free | Low page cache (idle node): reclaim estimate tracks buddy stock. |
-| MemAvailable >> Movable buddy free | Busy node with large cache: dashed MemAvailable is **not** extra THP stock. |
+| Kernelcore stack: green sliver, red filling, thin amber | Unreclaimable used filling the pool (reclaimable slab cannot cover used). Pin `$numa` — DMA32 on node 0 can hide a tight Normal zone in a combined stack. |
+| Movable stack: green (ge9) shrinking, amber growing | Free movable is fragmenting below 2 MiB; compaction/khugepaged may still recover. |
+| Movable stack: red (non-THP-movable) dominating | Buddy free is mostly Unmovable/Isolate; little THP stock even if height is large. |
+| Kernelcore stack: amber growing, green shrinking | Slab filling the pool; reclaim can still help. |
 
 ### Caveats and limitations
 
 - **Pagetype saturation:** Fields like `>100000` in pagetypeinfo are a **floor**, not an exact count. Affected orders in unmovable/movable derivations can be **undercounted**; buddyinfo totals at the same order remain exact. Prefer buddy ge9 for exact 2 MiB **total** free; treat pagetype-derived unmovable at saturated orders as approximate.
 - **Order 0:** Pagetype per-order sums can diverge from buddyinfo at **order 0** on some kernels; orders **8–10** typically align. Rely on **ge9** lines for THP-sized conclusions.
 - **Reclaimable freelist:** `movable-capable` subtracts only Unmovable and Isolate; **Reclaimable** free buddy pages remain in the residual. That makes `movable-capable` larger than the pagetype Movable line and can include pages that are not as readily usable for collapse as strictly Movable stock.
-- **Isolate migrate type:** Subtracted in movable-capable math but not included in `kme_node_unmovable_bytes_*`. Use `buddy − movable` on the dashboard for Unmovable + Isolate in the THP zone.
-- **kernelcore hosts:** When `ZONE_MOVABLE` exists, THP buddy metrics read the **Movable** zone. Without it, they read **Normal**. Zoneinfo always reports all zones. Kernelcore pool panel lines (free/used) are gated on Movable zone presence; do not interpret DMA+DMA32+Normal used on non-split hosts as kernel stock.
+- **Isolate migrate type:** Subtracted in movable-capable math but not included in `kme_node_unmovable_bytes_*`. The Movable-zone stack bottom slice is `buddy − movable` (Unmovable + Isolate in the THP zone).
+- **kernelcore hosts:** When `ZONE_MOVABLE` exists, THP buddy metrics read the **Movable** zone. Without it, they read **Normal**. Zoneinfo always reports all zones. Kernelcore pool panel slices (Unreclaimable used / Reclaimable slab / Free) are gated on Movable zone presence; do not interpret DMA+DMA32+Normal used on non-split hosts as kernel stock. Both stacked charts `sum()` the current `$node`/`$numa` selection (`visual.stack: all` is a single stack).
 - **Resident vs cgroup anon:** RSS and cgroup `anon` are related but not identical; small gaps in THP/Resident are expected.
 - **Scope:** Buddy/pagetype metrics describe **free** buddy pages in the THP zone (Movable if present, else Normal). Zoneinfo metrics describe **structural** zone sizes (`present`) and free pages across DMA/DMA32/Normal/Movable. Neither replaces hugetlbfs pool accounting.
 - **Policy:** Metrics show stock and activity, not sysfs THP policy (`/sys/kernel/mm/transparent_hugepage/…`). Low VM THP with `never` or without `MADV_HUGEPAGE` is expected regardless of movable ge9.

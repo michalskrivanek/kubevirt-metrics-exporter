@@ -230,13 +230,12 @@ spec:
           display:
             name: THP readiness (Movable zone)
             description: >-
-              Per-NUMA buddy stock in the Movable zone (Normal if no Movable).
-              ≥2 MiB Movable = buddy − unmovable − isolate at orders ≥9.
-              Movable total = same formula, all orders.
-              Buddy free total = buddyinfo block sum.
-              Non-THP-movable freelist = buddy − movable (Unmovable + Isolate in the
-              THP zone). Dashed: MemAvailable (node-wide reclaim). Limit keeps the top
-              node·NUMA pairs by buddy free total (MemAvailable: top nodes by reclaim).
+              Buddy free stock in the Movable zone (Normal if no Movable) for the
+              current node/NUMA selection. Stacked height = buddy free total.
+              Bottom: non-THP-movable freelist (Unmovable + Isolate). Middle: movable
+              below 2 MiB (needs compaction/collapse). Top: ≥2 MiB movable (ready THP
+              stock). Dashed: MemAvailable (node-wide reclaim; not a buddy slice — if it
+              joins the stack, the overlay trick failed). Pin Node/NUMA.
           links:
             - name: Node memory pressure (detail)
               url: '/monitoring/v2/dashboards/view?dashboard=memory&project=kubevirt-metrics-exporter&node=$node'
@@ -246,6 +245,7 @@ spec:
             spec:
               yAxis:
                 show: true
+                min: 0
                 label: Buddy stock (bytes)
                 format:
                   shortValues: true
@@ -253,9 +253,31 @@ spec:
               legend:
                 position: bottom
                 mode: table
+              visual:
+                areaOpacity: 0.2
+                connectNulls: false
+                display: line
+                lineWidth: 1.5
+                pointRadius: 0
+                stack: all
               querySettings:
-                - queryIndex: 4
+                - queryIndex: 0
+                  colorMode: fixed
+                  colorValue: '#C7254E'
+                - queryIndex: 1
+                  colorMode: fixed
+                  colorValue: '#F0A202'
+                - queryIndex: 2
+                  colorMode: fixed
+                  colorValue: '#2E7D32'
+                - queryIndex: 3
+                  colorMode: fixed
+                  colorValue: '#6BB6FF'
                   lineStyle: dashed
+                  areaOpacity: 0
+                  format:
+                    shortValues: true
+                    unit: bytes
           queries:
             - kind: TimeSeriesQuery
               spec:
@@ -265,9 +287,9 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'kme_node_movable_bytes_order_ge_9{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"} and on (node, numa) topk($topk, kme_node_buddy_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"})'
+                    query: 'sum(kme_node_buddy_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}) - sum(kme_node_movable_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"})'
                     minStep: "30s"
-                    seriesNameFormat: "≥2 MiB Movable - {{node}} · NUMA {{numa}}"
+                    seriesNameFormat: "Non-THP-movable freelist (buddy − movable)"
             - kind: TimeSeriesQuery
               spec:
                 plugin:
@@ -276,9 +298,9 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'kme_node_movable_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"} and on (node, numa) topk($topk, kme_node_buddy_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"})'
+                    query: 'sum(kme_node_movable_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}) - sum(kme_node_movable_bytes_order_ge_9{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"})'
                     minStep: "30s"
-                    seriesNameFormat: "Movable total - {{node}} · NUMA {{numa}}"
+                    seriesNameFormat: "Movable below 2 MiB"
             - kind: TimeSeriesQuery
               spec:
                 plugin:
@@ -287,9 +309,9 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'topk($topk, kme_node_buddy_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"})'
+                    query: 'sum(kme_node_movable_bytes_order_ge_9{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"})'
                     minStep: "30s"
-                    seriesNameFormat: "Buddy free total - {{node}} · NUMA {{numa}}"
+                    seriesNameFormat: "≥2 MiB Movable"
             - kind: TimeSeriesQuery
               spec:
                 plugin:
@@ -298,20 +320,9 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: '(kme_node_buddy_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"} - kme_node_movable_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"}) and on (node, numa) topk($topk, kme_node_buddy_bytes_all_orders{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"})'
+                    query: 'sum(label_replace(node_memory_MemAvailable_bytes{job="node-exporter", instance=~"$node"}, "node", "$1", "instance", "(.*)"))'
                     minStep: "30s"
-                    seriesNameFormat: "Non-THP-movable freelist (buddy − movable) - {{node}} · NUMA {{numa}}"
-            - kind: TimeSeriesQuery
-              spec:
-                plugin:
-                  kind: PrometheusTimeSeriesQuery
-                  spec:
-                    datasource:
-                      kind: PrometheusDatasource
-                      name: thanos-querier
-                    query: 'topk($topk, label_replace(node_memory_MemAvailable_bytes{job="node-exporter", instance=~"$node"}, "node", "$1", "instance", "(.*)"))'
-                    minStep: "30s"
-                    seriesNameFormat: "MemAvailable - node-wide reclaim estimate · {{node}}"
+                    seriesNameFormat: "MemAvailable (node-wide reclaim)"
 
       node_thp_readiness_unmovable:
         kind: Panel
@@ -319,17 +330,18 @@ spec:
           display:
             name: THP readiness (Kernelcore pool)
             description: >-
-              Split-layout hosts only (kernelcore= with populated Movable zone). Structural
-              kernelcore pool from zoneinfo (DMA + DMA32 + Normal). Per NUMA: free + used
-              = sum(zone present) ≈ kernelcore= budget. Used = sum(present) − sum(pages
-              free). THP-ineligible; mostly kernel/slab/page-table. Empty on fallback hosts
-              (no Movable zone) — use the Movable zone panel instead; its Non-THP-movable
-              line covers the small unmovable freelist there.
+              Split-layout hosts only (populated Movable zone). DMA+DMA32+Normal occupancy
+              for the current node/NUMA selection; stacked height ≈ kernelcore= budget.
+              Bottom: Unreclaimable used (kernel, unreclaimable slab, page tables —
+              not “unreclaimable slab only”). Middle: Reclaimable slab. Top: Free.
+              Empty without Movable — do not read this stack on fallback hosts (Normal then
+              holds file/anon). Use the Movable zone panel there.
           plugin:
             kind: TimeSeriesChart
             spec:
               yAxis:
                 show: true
+                min: 0
                 label: Kernelcore zone memory (bytes)
                 format:
                   shortValues: true
@@ -337,6 +349,23 @@ spec:
               legend:
                 position: bottom
                 mode: table
+              visual:
+                areaOpacity: 0.2
+                connectNulls: false
+                display: line
+                lineWidth: 1.5
+                pointRadius: 0
+                stack: all
+              querySettings:
+                - queryIndex: 0
+                  colorMode: fixed
+                  colorValue: '#C7254E'
+                - queryIndex: 1
+                  colorMode: fixed
+                  colorValue: '#F0A202'
+                - queryIndex: 2
+                  colorMode: fixed
+                  colorValue: '#2E7D32'
           queries:
             - kind: TimeSeriesQuery
               spec:
@@ -346,9 +375,9 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: 'sum by (node, numa) (kme_node_zone_free_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"}) $kernelcore_zoneinfo_gate'
+                    query: 'sum(kme_node_zone_present_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"} $kernelcore_zoneinfo_gate) - sum(kme_node_zone_free_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"} $kernelcore_zoneinfo_gate) - sum(kme_node_slab_reclaimable_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"} $kernelcore_zoneinfo_gate)'
                     minStep: "30s"
-                    seriesNameFormat: "Kernelcore free - {{node}} · NUMA {{numa}}"
+                    seriesNameFormat: "Unreclaimable used"
             - kind: TimeSeriesQuery
               spec:
                 plugin:
@@ -357,9 +386,20 @@ spec:
                     datasource:
                       kind: PrometheusDatasource
                       name: thanos-querier
-                    query: '(sum by (node, numa) (kme_node_zone_present_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"}) - sum by (node, numa) (kme_node_zone_free_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"})) $kernelcore_zoneinfo_gate'
+                    query: 'sum(kme_node_slab_reclaimable_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa"} $kernelcore_zoneinfo_gate)'
                     minStep: "30s"
-                    seriesNameFormat: "Kernelcore used - {{node}} · NUMA {{numa}}"
+                    seriesNameFormat: "Reclaimable slab"
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    datasource:
+                      kind: PrometheusDatasource
+                      name: thanos-querier
+                    query: 'sum(kme_node_zone_free_bytes{job="kubevirt-metrics-exporter", node=~"$node", numa=~"$numa", zone=~"DMA|DMA32|Normal"} $kernelcore_zoneinfo_gate)'
+                    minStep: "30s"
+                    seriesNameFormat: "Free"
 
       node_kernel_activity:
         kind: Panel
